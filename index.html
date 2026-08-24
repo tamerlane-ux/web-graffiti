@@ -147,6 +147,7 @@
           <a href="#top">Back to top</a>
         </footer>
 
+        <div id="graffiti-tiles" aria-hidden="true"></div>
         <canvas id="graffiti-canvas" aria-label="Graffiti drawing surface"></canvas>
       </div>
     </div>
@@ -175,8 +176,8 @@
       <div class="zoom-controls" aria-label="Zoom controls">
         <button id="zoom-in" class="zoom-step" type="button" aria-label="Zoom in" title="Zoom in">+</button>
         <div id="zoom-slider-wrap" class="zoom-slider-wrap">
-          <input id="zoom-slider" class="zoom-slider" type="range" min="50" max="200" step="5" value="100" aria-label="Zoom level" />
-          <output id="zoom-value" class="zoom-value" for="zoom-slider" aria-live="polite">100%</output>
+          <input id="zoom-slider" class="zoom-slider" type="range" min="0" max="100" step="5" value="0" aria-label="Canvas zoom level" />
+          <output id="zoom-value" class="zoom-value" for="zoom-slider" aria-live="polite">0%</output>
         </div>
         <button id="zoom-out" class="zoom-step" type="button" aria-label="Zoom out" title="Zoom out">−</button>
         <span class="zoom-divider" aria-hidden="true"></span>

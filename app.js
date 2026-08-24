@@ -2,13 +2,18 @@
 
 const STORAGE_PREFIX = "web-graffiti:page:";
 const CREATOR_KEY = "web-graffiti:anonymous-creator";
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 2;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = (MAX_ZOOM - MIN_ZOOM) * 0.05;
 const HISTORY_LIMIT = 24;
+const TILE_SIZE = 512;
+const TILE_OVERSCAN = 1;
 
 const dom = {
   body: document.body,
+  shell: document.querySelector("#surface-shell"),
   surface: document.querySelector("#site-surface"),
+  tiles: document.querySelector("#graffiti-tiles"),
   canvas: document.querySelector("#graffiti-canvas"),
   launch: document.querySelector("#graffiti-launch"),
   controls: document.querySelector("#graffiti-controls"),
@@ -49,7 +54,6 @@ const dom = {
   bookmark: document.querySelector("#bookmark-button")
 };
 
-const context = dom.canvas.getContext("2d");
 const pieceCanvas = document.createElement("canvas");
 const pieceContext = pieceCanvas.getContext("2d");
 
@@ -63,6 +67,10 @@ let sprayFrame = 0;
 let toastTimer = 0;
 let resizeFrame = 0;
 let zoomFeedbackTimer = 0;
+let canvasCssWidth = 0;
+let canvasCssHeight = 0;
+let canvasRenderScale = 1;
+const tileCache = new Map();
 
 const state = {
   mode: false,
@@ -72,6 +80,9 @@ const state = {
   spraySize: 36,
   eraserSize: 48,
   zoom: 1,
+  panX: 0,
+  panY: 0,
+  browsingScrollY: 0,
   spaceHeld: false,
   cursorClientX: 0,
   cursorClientY: 0,
@@ -224,68 +235,157 @@ function drawSprayMark(targetContext, color, samples, size, fringe) {
   targetContext.fill();
 }
 
-function renderStoredSpray(piece, geometry) {
-  const samples = piece.samples.map((sample) => ({
-    x: geometry.x + sample.nx * geometry.width,
-    y: geometry.y + sample.ny * geometry.height
-  }));
-  const fringe = piece.fringe.map((particle) => ({
-    x: geometry.x + particle.nx * geometry.width,
-    y: geometry.y + particle.ny * geometry.height,
-    r: particle.r
-  }));
-
-  if (piece.erasures.length === 0) {
-    drawSprayMark(context, piece.color, samples, piece.size, fringe);
-    return;
+function boundsFromPoints(samples, fringe, padding) {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const point of [...samples, ...fringe]) {
+    const radius = point.r || 0;
+    left = Math.min(left, point.x - radius);
+    top = Math.min(top, point.y - radius);
+    right = Math.max(right, point.x + radius);
+    bottom = Math.max(bottom, point.y + radius);
   }
-
-  if (pieceCanvas.width !== dom.canvas.width || pieceCanvas.height !== dom.canvas.height) {
-    pieceCanvas.width = dom.canvas.width;
-    pieceCanvas.height = dom.canvas.height;
-  }
-  pieceContext.clearRect(0, 0, pieceCanvas.width, pieceCanvas.height);
-  pieceContext.globalCompositeOperation = "source-over";
-  drawSprayMark(pieceContext, piece.color, samples, piece.size, fringe);
-  pieceContext.globalCompositeOperation = "destination-out";
-  pieceContext.fillStyle = "#000000";
-  pieceContext.beginPath();
-  for (const erasure of piece.erasures) {
-    const x = geometry.x + erasure.nx * geometry.width;
-    const y = geometry.y + erasure.ny * geometry.height;
-    pieceContext.moveTo(x + erasure.r, y);
-    pieceContext.arc(x, y, erasure.r, 0, Math.PI * 2);
-  }
-  pieceContext.fill();
-  pieceContext.globalCompositeOperation = "source-over";
-  context.drawImage(pieceCanvas, 0, 0);
+  return left === Infinity ? null : { left: left - padding, top: top - padding, right: right + padding, bottom: bottom + padding };
 }
 
-function render() {
-  context.clearRect(0, 0, dom.canvas.width, dom.canvas.height);
+function overlapsTile(bounds, tile) {
+  return bounds && bounds.right >= tile.x && bounds.left <= tile.x + TILE_SIZE && bounds.bottom >= tile.y && bounds.top <= tile.y + TILE_SIZE;
+}
 
-  for (const piece of pieces) {
-    const anchor = findAnchor(piece.anchorId);
-    const geometry = getAnchorGeometry(anchor);
-    if (!geometry || geometry.width <= 0 || geometry.height <= 0) continue;
-    if (piece.samples.length > 0) {
-      renderStoredSpray(piece, geometry);
-    } else {
-      context.fillStyle = piece.color;
-      context.beginPath();
-      for (const particle of piece.particles) {
-        const x = geometry.x + particle.nx * geometry.width;
-        const y = geometry.y + particle.ny * geometry.height;
-        context.moveTo(x + particle.r, y);
-        context.arc(x, y, particle.r, 0, Math.PI * 2);
-      }
-      context.fill();
+function getRenderablePieces() {
+  const geometryByAnchor = new Map();
+  const resolveGeometry = (anchorId) => {
+    if (!geometryByAnchor.has(anchorId)) geometryByAnchor.set(anchorId, getAnchorGeometry(findAnchor(anchorId)));
+    return geometryByAnchor.get(anchorId);
+  };
+
+  return pieces.map((piece) => {
+    const geometry = resolveGeometry(piece.anchorId);
+    if (!geometry || geometry.width <= 0 || geometry.height <= 0) return null;
+    const samples = piece.samples.map((sample) => ({ x: geometry.x + sample.nx * geometry.width, y: geometry.y + sample.ny * geometry.height }));
+    const fringe = piece.fringe.map((particle) => ({ x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
+    const particles = piece.particles.map((particle) => ({ x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
+    const erasures = piece.erasures.map((erasure) => ({ x: geometry.x + erasure.nx * geometry.width, y: geometry.y + erasure.ny * geometry.height, r: erasure.r }));
+    return { piece, samples, fringe, particles, erasures, bounds: boundsFromPoints(samples.length ? samples : particles, fringe, piece.size * 0.5) };
+  }).filter(Boolean);
+}
+
+function getVisibleTiles() {
+  const surfaceRect = dom.surface.getBoundingClientRect();
+  const left = Math.max(0, (0 - surfaceRect.left) / state.zoom);
+  const top = Math.max(0, (0 - surfaceRect.top) / state.zoom);
+  const right = Math.min(canvasCssWidth, (window.innerWidth - surfaceRect.left) / state.zoom);
+  const bottom = Math.min(canvasCssHeight, (window.innerHeight - surfaceRect.top) / state.zoom);
+  const maxX = Math.max(0, Math.ceil(canvasCssWidth / TILE_SIZE) - 1);
+  const maxY = Math.max(0, Math.ceil(canvasCssHeight / TILE_SIZE) - 1);
+  const startX = Math.max(0, Math.floor(left / TILE_SIZE) - TILE_OVERSCAN);
+  const startY = Math.max(0, Math.floor(top / TILE_SIZE) - TILE_OVERSCAN);
+  const endX = Math.min(maxX, Math.floor(right / TILE_SIZE) + TILE_OVERSCAN);
+  const endY = Math.min(maxY, Math.floor(bottom / TILE_SIZE) + TILE_OVERSCAN);
+  const tiles = [];
+  for (let y = startY; y <= endY; y += 1) {
+    for (let x = startX; x <= endX; x += 1) tiles.push({ x: x * TILE_SIZE, y: y * TILE_SIZE, key: `${x}:${y}` });
+  }
+  return tiles;
+}
+
+function getTile(tile) {
+  let canvas = tileCache.get(tile.key);
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    canvas.className = "graffiti-tile";
+    dom.tiles.append(canvas);
+    tileCache.set(tile.key, canvas);
+  }
+  const pixelSize = Math.ceil(TILE_SIZE * canvasRenderScale);
+  if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
+    canvas.width = pixelSize;
+    canvas.height = pixelSize;
+  }
+  canvas.style.left = tile.x + "px";
+  canvas.style.top = tile.y + "px";
+  canvas.style.width = TILE_SIZE + "px";
+  canvas.style.height = TILE_SIZE + "px";
+  return canvas;
+}
+
+function drawRenderablePiece(targetContext, rendered) {
+  const { piece, samples, fringe, particles, erasures } = rendered;
+  if (samples.length === 0) {
+    targetContext.fillStyle = piece.color;
+    targetContext.beginPath();
+    for (const particle of particles) {
+      targetContext.moveTo(particle.x + particle.r, particle.y);
+      targetContext.arc(particle.x, particle.y, particle.r, 0, Math.PI * 2);
+    }
+    targetContext.fill();
+    return;
+  }
+  if (erasures.length === 0) {
+    drawSprayMark(targetContext, piece.color, samples, piece.size, fringe);
+    return;
+  }
+  drawSprayMark(targetContext, piece.color, samples, piece.size, fringe);
+  targetContext.globalCompositeOperation = "destination-out";
+  targetContext.beginPath();
+  for (const erasure of erasures) {
+    targetContext.moveTo(erasure.x + erasure.r, erasure.y);
+    targetContext.arc(erasure.x, erasure.y, erasure.r, 0, Math.PI * 2);
+  }
+  targetContext.fill();
+  targetContext.globalCompositeOperation = "source-over";
+}
+
+function renderTile(tile, renderedPieces, activeRendered) {
+  const canvas = getTile(tile);
+  const tileContext = canvas.getContext("2d");
+  tileContext.setTransform(1, 0, 0, 1, 0, 0);
+  tileContext.clearRect(0, 0, canvas.width, canvas.height);
+  const setTileTransform = (target) => target.setTransform(canvasRenderScale, 0, 0, canvasRenderScale, -tile.x * canvasRenderScale, -tile.y * canvasRenderScale);
+  setTileTransform(tileContext);
+  for (const rendered of renderedPieces) {
+    if (!overlapsTile(rendered.bounds, tile)) continue;
+    if (rendered.erasures.length === 0) {
+      drawRenderablePiece(tileContext, rendered);
+      continue;
+    }
+    if (pieceCanvas.width !== canvas.width || pieceCanvas.height !== canvas.height) {
+      pieceCanvas.width = canvas.width;
+      pieceCanvas.height = canvas.height;
+    }
+    pieceContext.setTransform(1, 0, 0, 1, 0, 0);
+    pieceContext.clearRect(0, 0, pieceCanvas.width, pieceCanvas.height);
+    setTileTransform(pieceContext);
+    drawRenderablePiece(pieceContext, rendered);
+    tileContext.setTransform(1, 0, 0, 1, 0, 0);
+    tileContext.drawImage(pieceCanvas, 0, 0);
+    setTileTransform(tileContext);
+  }
+  if (activeRendered && overlapsTile(activeRendered.bounds, tile)) drawSprayMark(tileContext, activeRendered.color, activeRendered.samples, activeRendered.size, activeRendered.fringe);
+}
+
+function render({ activeOnly = false } = {}) {
+  if (!canvasCssWidth || !canvasCssHeight) return;
+  const visibleTiles = getVisibleTiles();
+  const requiredKeys = new Set(visibleTiles.map((tile) => tile.key));
+  for (const [key, canvas] of tileCache) {
+    if (!requiredKeys.has(key)) {
+      canvas.remove();
+      tileCache.delete(key);
     }
   }
-
-  if (activeAction && activeAction.type === "spray") {
-    drawSprayMark(context, activeAction.color, activeAction.samples, activeAction.size, activeAction.fringe);
-  }
+  const activeRendered = activeAction && activeAction.type === "spray"
+    ? { color: activeAction.color, size: activeAction.size, samples: activeAction.samples, fringe: activeAction.fringe, bounds: boundsFromPoints(activeAction.samples, activeAction.fringe, activeAction.size * 0.5) }
+    : null;
+  const renderedPieces = getRenderablePieces();
+  // An in-progress stroke only changes the tiles it touches. Repainting those
+  // tiles instead of every visible tile keeps the brush responsive at 4× zoom.
+  const tilesToRender = activeOnly && activeRendered
+    ? visibleTiles.filter((tile) => overlapsTile(activeRendered.bounds, tile))
+    : visibleTiles;
+  for (const tile of tilesToRender) renderTile(tile, renderedPieces, activeRendered);
 }
 
 function resizeCanvas() {
@@ -293,12 +393,14 @@ function resizeCanvas() {
   resizeFrame = window.requestAnimationFrame(() => {
     const width = Math.max(dom.surface.scrollWidth, dom.surface.clientWidth);
     const height = Math.max(dom.surface.scrollHeight, dom.surface.clientHeight);
-    if (dom.canvas.width !== Math.ceil(width) || dom.canvas.height !== Math.ceil(height)) {
-      dom.canvas.width = Math.ceil(width);
-      dom.canvas.height = Math.ceil(height);
-      dom.canvas.style.width = width + "px";
-      dom.canvas.style.height = height + "px";
-    }
+    canvasCssWidth = width;
+    canvasCssHeight = height;
+    canvasRenderScale = window.devicePixelRatio * state.zoom;
+    // This transparent canvas only captures pointer input; paint is held in visible tiles.
+    dom.canvas.width = Math.ceil(width);
+    dom.canvas.height = Math.ceil(height);
+    dom.canvas.style.width = width + "px";
+    dom.canvas.style.height = height + "px";
     render();
   });
 }
@@ -306,8 +408,8 @@ function resizeCanvas() {
 function clientToSurface(clientX, clientY) {
   const rect = dom.canvas.getBoundingClientRect();
   return {
-    x: (clientX - rect.left) * (dom.canvas.width / rect.width),
-    y: (clientY - rect.top) * (dom.canvas.height / rect.height)
+    x: (clientX - rect.left) * (canvasCssWidth / rect.width),
+    y: (clientY - rect.top) * (canvasCssHeight / rect.height)
   };
 }
 
@@ -378,6 +480,12 @@ function setMode(enabled) {
   if (enabled === state.mode) return;
   if (!enabled) finishActiveAction();
 
+  if (enabled) {
+    state.browsingScrollY = window.scrollY;
+    state.panX = 0;
+    state.panY = -state.browsingScrollY;
+  }
+
   state.mode = enabled;
   dom.body.classList.toggle("graffiti-mode", enabled);
   dom.launch.hidden = enabled;
@@ -391,11 +499,15 @@ function setMode(enabled) {
   updateHistoryButtons();
 
   if (enabled) {
+    applyViewportTransform();
     updateToolInterface();
     showToast("Graffiti Mode is active. Website controls are locked.");
   } else {
+    const returnScrollY = Math.max(0, -state.panY / state.zoom);
     state.spaceHeld = false;
     dom.body.classList.remove("is-panning");
+    dom.surface.style.transform = "";
+    window.scrollTo(0, returnScrollY);
     showToast("Graffiti Mode closed. Website controls are active.");
   }
 }
@@ -481,7 +593,7 @@ function sprayLoop(timestamp) {
 
   action.lastEmissionPoint = { ...to };
   action.lastTimestamp = timestamp;
-  render();
+  render({ activeOnly: true });
   sprayFrame = window.requestAnimationFrame(sprayLoop);
 }
 
@@ -620,6 +732,14 @@ function beginPan(event) {
   dom.cursor.classList.remove("is-visible");
 }
 
+function moveViewportPan(event) {
+  state.panX += event.clientX - activeAction.clientX;
+  state.panY += event.clientY - activeAction.clientY;
+  activeAction.clientX = event.clientX;
+  activeAction.clientY = event.clientY;
+  applyViewportTransform();
+}
+
 function finalizeSpray(action) {
   if (action.samples.length === 0) return;
   const anchorId = chooseCommonAnchor(action.anchorChains);
@@ -665,11 +785,11 @@ function finishActiveAction() {
 }
 
 function onCanvasPointerDown(event) {
-  if (!state.mode || event.button !== 0) return;
+  if (!state.mode || (event.button !== 0 && event.button !== 1)) return;
   event.preventDefault();
   dom.canvas.setPointerCapture(event.pointerId);
 
-  if (state.spaceHeld) {
+  if (state.spaceHeld || event.button === 1) {
     beginPan(event);
   } else if (state.tool === "eraser") {
     beginEraser(event);
@@ -686,9 +806,7 @@ function onCanvasPointerMove(event) {
   if (!activeAction || activeAction.pointerId !== event.pointerId) return;
 
   if (activeAction.type === "pan") {
-    window.scrollBy(activeAction.clientX - event.clientX, activeAction.clientY - event.clientY);
-    activeAction.clientX = event.clientX;
-    activeAction.clientY = event.clientY;
+    moveViewportPan(event);
     return;
   }
 
@@ -712,9 +830,30 @@ function onCanvasPointerUp(event) {
   finishActiveAction();
 }
 
+function onViewportPointerDown(event) {
+  const wantsPan = event.button === 1 || (event.button === 0 && state.spaceHeld);
+  if (!state.mode || event.target !== dom.shell || !wantsPan) return;
+  event.preventDefault();
+  dom.shell.setPointerCapture(event.pointerId);
+  beginPan(event);
+}
+
+function onViewportPointerMove(event) {
+  if (!activeAction || activeAction.type !== "pan" || activeAction.pointerId !== event.pointerId) return;
+  if (!dom.shell.hasPointerCapture(event.pointerId)) return;
+  moveViewportPan(event);
+}
+
+function onViewportPointerUp(event) {
+  if (!activeAction || activeAction.type !== "pan" || activeAction.pointerId !== event.pointerId) return;
+  if (!dom.shell.hasPointerCapture(event.pointerId)) return;
+  dom.shell.releasePointerCapture(event.pointerId);
+  finishActiveAction();
+}
+
 function syncZoomControl() {
-  const percentage = Math.round(state.zoom * 100);
   const normalized = (state.zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
+  const percentage = Math.round(normalized * 100);
   dom.zoomSlider.value = String(percentage);
   dom.zoomSlider.setAttribute("aria-valuetext", percentage + "%");
   dom.zoomSlider.style.setProperty("--zoom-fill", normalized * 100 + "%");
@@ -733,6 +872,34 @@ function showZoomFeedback() {
   }, 900);
 }
 
+function clampViewportPan() {
+  if (!state.mode) return;
+
+  const scaledWidth = dom.surface.scrollWidth * state.zoom;
+  const scaledHeight = dom.surface.scrollHeight * state.zoom;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  if (scaledWidth <= viewportWidth) {
+    state.panX = (viewportWidth - scaledWidth) / 2;
+  } else {
+    state.panX = Math.max(viewportWidth - scaledWidth, Math.min(0, state.panX));
+  }
+
+  if (scaledHeight <= viewportHeight) {
+    state.panY = (viewportHeight - scaledHeight) / 2;
+  } else {
+    state.panY = Math.max(viewportHeight - scaledHeight, Math.min(0, state.panY));
+  }
+}
+
+function applyViewportTransform() {
+  if (!state.mode) return;
+  clampViewportPan();
+  dom.surface.style.transform = `translate3d(${state.panX}px, ${state.panY}px, 0) scale(${state.zoom})`;
+  updateCursor();
+}
+
 function setZoom(nextZoom, clientX = window.innerWidth / 2, clientY = window.innerHeight / 2) {
   const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(nextZoom * 20) / 20));
   if (next === state.zoom) {
@@ -742,22 +909,19 @@ function setZoom(nextZoom, clientX = window.innerWidth / 2, clientY = window.inn
   }
 
   const oldZoom = state.zoom;
-  const oldRect = dom.surface.getBoundingClientRect();
-  const localX = (clientX - oldRect.left) / oldZoom;
-  const localY = (clientY - oldRect.top) / oldZoom;
+  const localX = (clientX - state.panX) / oldZoom;
+  const localY = (clientY - state.panY) / oldZoom;
   state.zoom = next;
-  dom.surface.style.zoom = String(next);
+  state.panX = clientX - localX * next;
+  state.panY = clientY - localY * next;
+  resizeCanvas();
+  applyViewportTransform();
   syncZoomControl();
   showZoomFeedback();
-  updateCursor();
+}
 
-  window.requestAnimationFrame(() => {
-    const newRect = dom.surface.getBoundingClientRect();
-    const deltaX = newRect.left + localX * next - clientX;
-    const deltaY = newRect.top + localY * next - clientY;
-    window.scrollBy(deltaX, deltaY);
-    resizeCanvas();
-  });
+function percentageToZoom(percentage) {
+  return MIN_ZOOM + (Math.max(0, Math.min(100, percentage)) / 100) * (MAX_ZOOM - MIN_ZOOM);
 }
 
 function clampChannel(value) {
@@ -998,16 +1162,17 @@ dom.hexInput.addEventListener("input", () => {
 
 dom.undo.addEventListener("click", undo);
 dom.redo.addEventListener("click", redo);
-dom.zoomIn.addEventListener("click", () => setZoom(state.zoom + 0.1));
-dom.zoomOut.addEventListener("click", () => setZoom(state.zoom - 0.1));
-dom.zoomReset.addEventListener("click", () => setZoom(1));
-dom.zoomSlider.addEventListener("input", (event) => setZoom(Number(event.currentTarget.value) / 100));
+dom.zoomIn.addEventListener("click", () => setZoom(state.zoom + ZOOM_STEP));
+dom.zoomOut.addEventListener("click", () => setZoom(state.zoom - ZOOM_STEP));
+dom.zoomReset.addEventListener("click", () => setZoom(MIN_ZOOM));
+dom.zoomSlider.addEventListener("input", (event) => setZoom(percentageToZoom(Number(event.currentTarget.value))));
 dom.zoomSlider.addEventListener("pointerdown", showZoomFeedback);
 
 dom.canvas.addEventListener("pointerdown", onCanvasPointerDown);
 dom.canvas.addEventListener("pointermove", onCanvasPointerMove);
 dom.canvas.addEventListener("pointerup", onCanvasPointerUp);
 dom.canvas.addEventListener("pointercancel", onCanvasPointerUp);
+dom.canvas.addEventListener("auxclick", (event) => event.preventDefault());
 dom.canvas.addEventListener("pointerenter", (event) => {
   state.cursorInside = true;
   state.cursorClientX = event.clientX;
@@ -1020,11 +1185,32 @@ dom.canvas.addEventListener("pointerleave", () => {
     updateCursor();
   }
 });
-dom.canvas.addEventListener("wheel", (event) => {
-  if (!state.mode || !event.ctrlKey) return;
+window.addEventListener("wheel", (event) => {
+  if (!state.mode) return;
   event.preventDefault();
-  setZoom(state.zoom + (event.deltaY < 0 ? 0.1 : -0.1), event.clientX, event.clientY);
+
+  if (event.ctrlKey || event.metaKey) {
+    setZoom(state.zoom + (event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP), event.clientX, event.clientY);
+    return;
+  }
+
+  const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+      ? window.innerHeight
+      : 1;
+  const horizontalDelta = event.deltaX || (event.shiftKey ? event.deltaY : 0);
+  const verticalDelta = event.shiftKey && !event.deltaX ? 0 : event.deltaY;
+  state.panX -= horizontalDelta * unit;
+  state.panY -= verticalDelta * unit;
+  applyViewportTransform();
 }, { passive: false });
+
+dom.shell.addEventListener("pointerdown", onViewportPointerDown);
+dom.shell.addEventListener("pointermove", onViewportPointerMove);
+dom.shell.addEventListener("pointerup", onViewportPointerUp);
+dom.shell.addEventListener("pointercancel", onViewportPointerUp);
+dom.shell.addEventListener("auxclick", (event) => event.preventDefault());
 
 dom.prototypeToggle.addEventListener("click", () => {
   const open = dom.prototypePanel.hidden;
@@ -1051,6 +1237,24 @@ window.addEventListener("keydown", (event) => {
   }
 
   if (!state.mode || editingText) return;
+
+  if ((event.ctrlKey || event.metaKey) && ["+", "=", "-", "0"].includes(event.key)) {
+    event.preventDefault();
+    if (event.key === "0") setZoom(MIN_ZOOM);
+    else setZoom(state.zoom + (event.key === "-" ? -ZOOM_STEP : ZOOM_STEP));
+    return;
+  }
+
+  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+    event.preventDefault();
+    const panStep = event.shiftKey ? 160 : 64;
+    if (event.key === "ArrowUp") state.panY += panStep;
+    else if (event.key === "ArrowDown") state.panY -= panStep;
+    else if (event.key === "ArrowLeft") state.panX += panStep;
+    else state.panX -= panStep;
+    applyViewportTransform();
+    return;
+  }
 
   if (event.code === "Space") {
     state.spaceHeld = true;
@@ -1093,14 +1297,19 @@ window.addEventListener("hashchange", () => {
 });
 
 window.addEventListener("beforeunload", persistPieces);
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener("resize", () => {
+  resizeCanvas();
+  applyViewportTransform();
+});
+window.addEventListener("scroll", () => {
+  if (!state.mode) render();
+}, { passive: true });
 
 if (window.ResizeObserver) {
   const surfaceObserver = new ResizeObserver(resizeCanvas);
   surfaceObserver.observe(dom.surface);
 }
 
-dom.surface.style.zoom = "1";
 syncZoomControl();
 dom.previousColor.style.background = state.color;
 applyCustomColor(state.customColor);
