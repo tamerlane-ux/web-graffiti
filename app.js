@@ -6,11 +6,14 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = (MAX_ZOOM - MIN_ZOOM) * 0.05;
 const HISTORY_LIMIT = 24;
+const TILE_SIZE = 512;
+const TILE_OVERSCAN = 1;
 
 const dom = {
   body: document.body,
   shell: document.querySelector("#surface-shell"),
   surface: document.querySelector("#site-surface"),
+  tiles: document.querySelector("#graffiti-tiles"),
   canvas: document.querySelector("#graffiti-canvas"),
   launch: document.querySelector("#graffiti-launch"),
   controls: document.querySelector("#graffiti-controls"),
@@ -51,7 +54,6 @@ const dom = {
   bookmark: document.querySelector("#bookmark-button")
 };
 
-const context = dom.canvas.getContext("2d");
 const pieceCanvas = document.createElement("canvas");
 const pieceContext = pieceCanvas.getContext("2d");
 
@@ -65,6 +67,10 @@ let sprayFrame = 0;
 let toastTimer = 0;
 let resizeFrame = 0;
 let zoomFeedbackTimer = 0;
+let canvasCssWidth = 0;
+let canvasCssHeight = 0;
+let canvasRenderScale = 1;
+const tileCache = new Map();
 
 const state = {
   mode: false,
@@ -229,68 +235,157 @@ function drawSprayMark(targetContext, color, samples, size, fringe) {
   targetContext.fill();
 }
 
-function renderStoredSpray(piece, geometry) {
-  const samples = piece.samples.map((sample) => ({
-    x: geometry.x + sample.nx * geometry.width,
-    y: geometry.y + sample.ny * geometry.height
-  }));
-  const fringe = piece.fringe.map((particle) => ({
-    x: geometry.x + particle.nx * geometry.width,
-    y: geometry.y + particle.ny * geometry.height,
-    r: particle.r
-  }));
-
-  if (piece.erasures.length === 0) {
-    drawSprayMark(context, piece.color, samples, piece.size, fringe);
-    return;
+function boundsFromPoints(samples, fringe, padding) {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const point of [...samples, ...fringe]) {
+    const radius = point.r || 0;
+    left = Math.min(left, point.x - radius);
+    top = Math.min(top, point.y - radius);
+    right = Math.max(right, point.x + radius);
+    bottom = Math.max(bottom, point.y + radius);
   }
-
-  if (pieceCanvas.width !== dom.canvas.width || pieceCanvas.height !== dom.canvas.height) {
-    pieceCanvas.width = dom.canvas.width;
-    pieceCanvas.height = dom.canvas.height;
-  }
-  pieceContext.clearRect(0, 0, pieceCanvas.width, pieceCanvas.height);
-  pieceContext.globalCompositeOperation = "source-over";
-  drawSprayMark(pieceContext, piece.color, samples, piece.size, fringe);
-  pieceContext.globalCompositeOperation = "destination-out";
-  pieceContext.fillStyle = "#000000";
-  pieceContext.beginPath();
-  for (const erasure of piece.erasures) {
-    const x = geometry.x + erasure.nx * geometry.width;
-    const y = geometry.y + erasure.ny * geometry.height;
-    pieceContext.moveTo(x + erasure.r, y);
-    pieceContext.arc(x, y, erasure.r, 0, Math.PI * 2);
-  }
-  pieceContext.fill();
-  pieceContext.globalCompositeOperation = "source-over";
-  context.drawImage(pieceCanvas, 0, 0);
+  return left === Infinity ? null : { left: left - padding, top: top - padding, right: right + padding, bottom: bottom + padding };
 }
 
-function render() {
-  context.clearRect(0, 0, dom.canvas.width, dom.canvas.height);
+function overlapsTile(bounds, tile) {
+  return bounds && bounds.right >= tile.x && bounds.left <= tile.x + TILE_SIZE && bounds.bottom >= tile.y && bounds.top <= tile.y + TILE_SIZE;
+}
 
-  for (const piece of pieces) {
-    const anchor = findAnchor(piece.anchorId);
-    const geometry = getAnchorGeometry(anchor);
-    if (!geometry || geometry.width <= 0 || geometry.height <= 0) continue;
-    if (piece.samples.length > 0) {
-      renderStoredSpray(piece, geometry);
-    } else {
-      context.fillStyle = piece.color;
-      context.beginPath();
-      for (const particle of piece.particles) {
-        const x = geometry.x + particle.nx * geometry.width;
-        const y = geometry.y + particle.ny * geometry.height;
-        context.moveTo(x + particle.r, y);
-        context.arc(x, y, particle.r, 0, Math.PI * 2);
-      }
-      context.fill();
+function getRenderablePieces() {
+  const geometryByAnchor = new Map();
+  const resolveGeometry = (anchorId) => {
+    if (!geometryByAnchor.has(anchorId)) geometryByAnchor.set(anchorId, getAnchorGeometry(findAnchor(anchorId)));
+    return geometryByAnchor.get(anchorId);
+  };
+
+  return pieces.map((piece) => {
+    const geometry = resolveGeometry(piece.anchorId);
+    if (!geometry || geometry.width <= 0 || geometry.height <= 0) return null;
+    const samples = piece.samples.map((sample) => ({ x: geometry.x + sample.nx * geometry.width, y: geometry.y + sample.ny * geometry.height }));
+    const fringe = piece.fringe.map((particle) => ({ x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
+    const particles = piece.particles.map((particle) => ({ x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
+    const erasures = piece.erasures.map((erasure) => ({ x: geometry.x + erasure.nx * geometry.width, y: geometry.y + erasure.ny * geometry.height, r: erasure.r }));
+    return { piece, samples, fringe, particles, erasures, bounds: boundsFromPoints(samples.length ? samples : particles, fringe, piece.size * 0.5) };
+  }).filter(Boolean);
+}
+
+function getVisibleTiles() {
+  const surfaceRect = dom.surface.getBoundingClientRect();
+  const left = Math.max(0, (0 - surfaceRect.left) / state.zoom);
+  const top = Math.max(0, (0 - surfaceRect.top) / state.zoom);
+  const right = Math.min(canvasCssWidth, (window.innerWidth - surfaceRect.left) / state.zoom);
+  const bottom = Math.min(canvasCssHeight, (window.innerHeight - surfaceRect.top) / state.zoom);
+  const maxX = Math.max(0, Math.ceil(canvasCssWidth / TILE_SIZE) - 1);
+  const maxY = Math.max(0, Math.ceil(canvasCssHeight / TILE_SIZE) - 1);
+  const startX = Math.max(0, Math.floor(left / TILE_SIZE) - TILE_OVERSCAN);
+  const startY = Math.max(0, Math.floor(top / TILE_SIZE) - TILE_OVERSCAN);
+  const endX = Math.min(maxX, Math.floor(right / TILE_SIZE) + TILE_OVERSCAN);
+  const endY = Math.min(maxY, Math.floor(bottom / TILE_SIZE) + TILE_OVERSCAN);
+  const tiles = [];
+  for (let y = startY; y <= endY; y += 1) {
+    for (let x = startX; x <= endX; x += 1) tiles.push({ x: x * TILE_SIZE, y: y * TILE_SIZE, key: `${x}:${y}` });
+  }
+  return tiles;
+}
+
+function getTile(tile) {
+  let canvas = tileCache.get(tile.key);
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    canvas.className = "graffiti-tile";
+    dom.tiles.append(canvas);
+    tileCache.set(tile.key, canvas);
+  }
+  const pixelSize = Math.ceil(TILE_SIZE * canvasRenderScale);
+  if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
+    canvas.width = pixelSize;
+    canvas.height = pixelSize;
+  }
+  canvas.style.left = tile.x + "px";
+  canvas.style.top = tile.y + "px";
+  canvas.style.width = TILE_SIZE + "px";
+  canvas.style.height = TILE_SIZE + "px";
+  return canvas;
+}
+
+function drawRenderablePiece(targetContext, rendered) {
+  const { piece, samples, fringe, particles, erasures } = rendered;
+  if (samples.length === 0) {
+    targetContext.fillStyle = piece.color;
+    targetContext.beginPath();
+    for (const particle of particles) {
+      targetContext.moveTo(particle.x + particle.r, particle.y);
+      targetContext.arc(particle.x, particle.y, particle.r, 0, Math.PI * 2);
+    }
+    targetContext.fill();
+    return;
+  }
+  if (erasures.length === 0) {
+    drawSprayMark(targetContext, piece.color, samples, piece.size, fringe);
+    return;
+  }
+  drawSprayMark(targetContext, piece.color, samples, piece.size, fringe);
+  targetContext.globalCompositeOperation = "destination-out";
+  targetContext.beginPath();
+  for (const erasure of erasures) {
+    targetContext.moveTo(erasure.x + erasure.r, erasure.y);
+    targetContext.arc(erasure.x, erasure.y, erasure.r, 0, Math.PI * 2);
+  }
+  targetContext.fill();
+  targetContext.globalCompositeOperation = "source-over";
+}
+
+function renderTile(tile, renderedPieces, activeRendered) {
+  const canvas = getTile(tile);
+  const tileContext = canvas.getContext("2d");
+  tileContext.setTransform(1, 0, 0, 1, 0, 0);
+  tileContext.clearRect(0, 0, canvas.width, canvas.height);
+  const setTileTransform = (target) => target.setTransform(canvasRenderScale, 0, 0, canvasRenderScale, -tile.x * canvasRenderScale, -tile.y * canvasRenderScale);
+  setTileTransform(tileContext);
+  for (const rendered of renderedPieces) {
+    if (!overlapsTile(rendered.bounds, tile)) continue;
+    if (rendered.erasures.length === 0) {
+      drawRenderablePiece(tileContext, rendered);
+      continue;
+    }
+    if (pieceCanvas.width !== canvas.width || pieceCanvas.height !== canvas.height) {
+      pieceCanvas.width = canvas.width;
+      pieceCanvas.height = canvas.height;
+    }
+    pieceContext.setTransform(1, 0, 0, 1, 0, 0);
+    pieceContext.clearRect(0, 0, pieceCanvas.width, pieceCanvas.height);
+    setTileTransform(pieceContext);
+    drawRenderablePiece(pieceContext, rendered);
+    tileContext.setTransform(1, 0, 0, 1, 0, 0);
+    tileContext.drawImage(pieceCanvas, 0, 0);
+    setTileTransform(tileContext);
+  }
+  if (activeRendered && overlapsTile(activeRendered.bounds, tile)) drawSprayMark(tileContext, activeRendered.color, activeRendered.samples, activeRendered.size, activeRendered.fringe);
+}
+
+function render({ activeOnly = false } = {}) {
+  if (!canvasCssWidth || !canvasCssHeight) return;
+  const visibleTiles = getVisibleTiles();
+  const requiredKeys = new Set(visibleTiles.map((tile) => tile.key));
+  for (const [key, canvas] of tileCache) {
+    if (!requiredKeys.has(key)) {
+      canvas.remove();
+      tileCache.delete(key);
     }
   }
-
-  if (activeAction && activeAction.type === "spray") {
-    drawSprayMark(context, activeAction.color, activeAction.samples, activeAction.size, activeAction.fringe);
-  }
+  const activeRendered = activeAction && activeAction.type === "spray"
+    ? { color: activeAction.color, size: activeAction.size, samples: activeAction.samples, fringe: activeAction.fringe, bounds: boundsFromPoints(activeAction.samples, activeAction.fringe, activeAction.size * 0.5) }
+    : null;
+  const renderedPieces = getRenderablePieces();
+  // An in-progress stroke only changes the tiles it touches. Repainting those
+  // tiles instead of every visible tile keeps the brush responsive at 4× zoom.
+  const tilesToRender = activeOnly && activeRendered
+    ? visibleTiles.filter((tile) => overlapsTile(activeRendered.bounds, tile))
+    : visibleTiles;
+  for (const tile of tilesToRender) renderTile(tile, renderedPieces, activeRendered);
 }
 
 function resizeCanvas() {
@@ -298,12 +393,14 @@ function resizeCanvas() {
   resizeFrame = window.requestAnimationFrame(() => {
     const width = Math.max(dom.surface.scrollWidth, dom.surface.clientWidth);
     const height = Math.max(dom.surface.scrollHeight, dom.surface.clientHeight);
-    if (dom.canvas.width !== Math.ceil(width) || dom.canvas.height !== Math.ceil(height)) {
-      dom.canvas.width = Math.ceil(width);
-      dom.canvas.height = Math.ceil(height);
-      dom.canvas.style.width = width + "px";
-      dom.canvas.style.height = height + "px";
-    }
+    canvasCssWidth = width;
+    canvasCssHeight = height;
+    canvasRenderScale = window.devicePixelRatio * state.zoom;
+    // This transparent canvas only captures pointer input; paint is held in visible tiles.
+    dom.canvas.width = Math.ceil(width);
+    dom.canvas.height = Math.ceil(height);
+    dom.canvas.style.width = width + "px";
+    dom.canvas.style.height = height + "px";
     render();
   });
 }
@@ -311,8 +408,8 @@ function resizeCanvas() {
 function clientToSurface(clientX, clientY) {
   const rect = dom.canvas.getBoundingClientRect();
   return {
-    x: (clientX - rect.left) * (dom.canvas.width / rect.width),
-    y: (clientY - rect.top) * (dom.canvas.height / rect.height)
+    x: (clientX - rect.left) * (canvasCssWidth / rect.width),
+    y: (clientY - rect.top) * (canvasCssHeight / rect.height)
   };
 }
 
@@ -496,7 +593,7 @@ function sprayLoop(timestamp) {
 
   action.lastEmissionPoint = { ...to };
   action.lastTimestamp = timestamp;
-  render();
+  render({ activeOnly: true });
   sprayFrame = window.requestAnimationFrame(sprayLoop);
 }
 
@@ -817,6 +914,7 @@ function setZoom(nextZoom, clientX = window.innerWidth / 2, clientY = window.inn
   state.zoom = next;
   state.panX = clientX - localX * next;
   state.panY = clientY - localY * next;
+  resizeCanvas();
   applyViewportTransform();
   syncZoomControl();
   showZoomFeedback();
@@ -1203,6 +1301,9 @@ window.addEventListener("resize", () => {
   resizeCanvas();
   applyViewportTransform();
 });
+window.addEventListener("scroll", () => {
+  if (!state.mode) render();
+}, { passive: true });
 
 if (window.ResizeObserver) {
   const surfaceObserver = new ResizeObserver(resizeCanvas);
