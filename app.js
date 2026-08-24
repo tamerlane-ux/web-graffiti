@@ -8,6 +8,10 @@ const ZOOM_STEP = (MAX_ZOOM - MIN_ZOOM) * 0.05;
 const HISTORY_LIMIT = 24;
 const TILE_SIZE = 512;
 const TILE_OVERSCAN = 1;
+const VALVE_OPEN_MS = 135;
+const VALVE_RELEASE_MS = 65;
+const QUICK_RELEASE_MS = 190;
+const CURSOR_RELEASE_RECOVERY_MS = 1000;
 
 const dom = {
   body: document.body,
@@ -87,6 +91,9 @@ const state = {
   cursorClientX: 0,
   cursorClientY: 0,
   cursorInside: false,
+  cursorVelocity: 0,
+  cursorLastSample: null,
+  cursorReleaseStartedAt: 0,
   hsv: { h: 0, s: 0, v: 6.7 },
   previousPickerColor: "#111111"
 };
@@ -207,6 +214,12 @@ function particleToSurface(piece, particle) {
 function drawSprayMark(targetContext, color, samples, size, fringe) {
   if (samples.length === 0) return;
 
+  const hasVariableFlow = samples.some((sample) => Number.isFinite(sample.flow));
+  if (hasVariableFlow) {
+    drawVariableSprayMark(targetContext, color, samples, size, fringe);
+    return;
+  }
+
   const coreWidth = Math.max(1, size * 0.78);
   targetContext.fillStyle = color;
   targetContext.strokeStyle = color;
@@ -233,6 +246,49 @@ function drawSprayMark(targetContext, color, samples, size, fringe) {
     targetContext.arc(particle.x, particle.y, particle.r, 0, Math.PI * 2);
   }
   targetContext.fill();
+}
+
+function drawVariableSprayMark(targetContext, color, samples, size, fringe) {
+  const coreRadius = size * 0.39;
+  targetContext.save();
+  targetContext.fillStyle = color;
+
+  const stamp = (point, flow, coverage) => {
+    const normalizedFlow = Math.max(0.08, Math.min(1, flow));
+    const radius = Math.max(0.55, coreRadius * (0.22 + normalizedFlow * 0.78));
+    const alpha = 0.08 + Math.max(0.12, Math.min(1, coverage)) * normalizedFlow * 0.27;
+    targetContext.globalAlpha = alpha;
+    targetContext.beginPath();
+    targetContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    targetContext.fill();
+  };
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index];
+    const flow = Number.isFinite(sample.flow) ? sample.flow : 1;
+    const coverage = Number.isFinite(sample.coverage) ? sample.coverage : 1;
+    const previous = samples[index - 1];
+    if (!previous) {
+      stamp(sample, flow, coverage);
+      continue;
+    }
+    const distance = Math.hypot(sample.x - previous.x, sample.y - previous.y);
+    const spacing = Math.max(1, coreRadius * 0.34);
+    const steps = Math.max(1, Math.ceil(distance / spacing));
+    for (let step = 1; step <= steps; step += 1) {
+      const amount = step / steps;
+      stamp({ x: previous.x + (sample.x - previous.x) * amount, y: previous.y + (sample.y - previous.y) * amount }, flow, coverage);
+    }
+  }
+
+  for (const particle of fringe) {
+    targetContext.globalAlpha = Number.isFinite(particle.alpha) ? particle.alpha : 1;
+    targetContext.beginPath();
+    targetContext.moveTo(particle.x + particle.r, particle.y);
+    targetContext.arc(particle.x, particle.y, particle.r, 0, Math.PI * 2);
+    targetContext.fill();
+  }
+  targetContext.restore();
 }
 
 function boundsFromPoints(samples, fringe, padding) {
@@ -264,8 +320,8 @@ function getRenderablePieces() {
   return pieces.map((piece) => {
     const geometry = resolveGeometry(piece.anchorId);
     if (!geometry || geometry.width <= 0 || geometry.height <= 0) return null;
-    const samples = piece.samples.map((sample) => ({ x: geometry.x + sample.nx * geometry.width, y: geometry.y + sample.ny * geometry.height }));
-    const fringe = piece.fringe.map((particle) => ({ x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
+    const samples = piece.samples.map((sample) => ({ ...sample, x: geometry.x + sample.nx * geometry.width, y: geometry.y + sample.ny * geometry.height }));
+    const fringe = piece.fringe.map((particle) => ({ ...particle, x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
     const particles = piece.particles.map((particle) => ({ x: geometry.x + particle.nx * geometry.width, y: geometry.y + particle.ny * geometry.height, r: particle.r }));
     const erasures = piece.erasures.map((erasure) => ({ x: geometry.x + erasure.nx * geometry.width, y: geometry.y + erasure.ny * geometry.height, r: erasure.r }));
     return { piece, samples, fringe, particles, erasures, bounds: boundsFromPoints(samples.length ? samples : particles, fringe, piece.size * 0.5) };
@@ -516,15 +572,54 @@ function activeThickness() {
   return state.tool === "eraser" ? state.eraserSize : state.spraySize;
 }
 
+function recordCursorMotion(clientX, clientY, timestamp = performance.now()) {
+  const previous = state.cursorLastSample;
+  if (previous) {
+    const elapsed = Math.max(1, timestamp - previous.timestamp);
+    const speed = Math.hypot(clientX - previous.x, clientY - previous.y) / elapsed;
+    state.cursorVelocity = state.cursorVelocity * 0.62 + speed * 0.38;
+  }
+  state.cursorLastSample = { x: clientX, y: clientY, timestamp };
+}
+
+function cursorRecoveryProgress(timestamp = performance.now()) {
+  if (!state.cursorReleaseStartedAt) return null;
+  const progress = Math.min(1, (timestamp - state.cursorReleaseStartedAt) / CURSOR_RELEASE_RECOVERY_MS);
+  if (progress >= 1) state.cursorReleaseStartedAt = 0;
+  return progress;
+}
+
 function updateCursor() {
-  const diameter = activeThickness() * state.zoom;
+  const recovery = cursorRecoveryProgress();
+  const velocityRatio = Math.min(1, state.cursorVelocity / 1.65);
+  const movingScale = 1 - velocityRatio * 0.64;
+  const recoveryScale = recovery === null ? null : 0.26 + recovery * 0.74;
+  const cursorScale = state.tool === "eraser" ? 1 : (recoveryScale === null ? movingScale : recoveryScale);
+  const density = state.tool === "eraser" ? 0 : (recovery === null
+    ? 0.06 + velocityRatio * 0.44
+    : 0.5 * (1 - recovery));
+  const diameter = activeThickness() * state.zoom * cursorScale;
   dom.cursor.style.width = diameter + "px";
   dom.cursor.style.height = diameter + "px";
   dom.cursor.style.left = state.cursorClientX + "px";
   dom.cursor.style.top = state.cursorClientY + "px";
   dom.cursor.style.borderColor = state.tool === "spray" ? state.color : "#ffffff";
+  dom.cursor.style.color = state.tool === "spray" ? state.color : "#ffffff";
+  dom.cursor.style.setProperty("--cursor-density", String(density));
   dom.cursor.classList.toggle("is-eraser", state.tool === "eraser");
   dom.cursor.classList.toggle("is-visible", state.mode && state.cursorInside && !state.spaceHeld);
+}
+
+function animateCursorRecovery() {
+  if (!state.cursorReleaseStartedAt) return;
+  updateCursor();
+  if (state.cursorReleaseStartedAt) window.requestAnimationFrame(animateCursorRecovery);
+}
+
+function showQuickReleaseCursorFeedback() {
+  state.cursorReleaseStartedAt = performance.now();
+  updateCursor();
+  window.requestAnimationFrame(animateCursorRecovery);
 }
 
 function updateToolInterface() {
@@ -546,12 +641,33 @@ function selectTool(tool) {
   updateToolInterface();
 }
 
-function emitSprayFringe(action, point, elapsed) {
-  const coreRadius = action.size * 0.39;
-  const outerRadius = action.size * 0.48;
+function valveFlowAt(action, timestamp) {
+  return Math.max(0.08, Math.min(1, (timestamp - action.startedAt) / VALVE_OPEN_MS));
+}
+
+function movementCoverage(speed) {
+  return Math.max(0.25, Math.min(1, 1.08 - speed / 1.7));
+}
+
+function addSpraySample(action, point, timestamp, flow = valveFlowAt(action, timestamp)) {
+  action.samples.push({
+    x: point.x,
+    y: point.y,
+    flow,
+    coverage: movementCoverage(action.pointerSpeed),
+    t: timestamp - action.startedAt
+  });
+}
+
+function emitSprayFringe(action, point, elapsed, flow = 1) {
+  const normalizedFlow = Math.max(0.08, Math.min(1, flow));
+  const coreRadius = action.size * (0.08 + normalizedFlow * 0.31);
+  const outerRadius = action.size * (0.14 + normalizedFlow * 0.34);
   const emissionScale = Math.max(0.65, Math.min(2, elapsed / 16.67));
-  const count = Math.max(1, Math.min(10, Math.round((2 + action.size / 22) * emissionScale)));
+  const count = Math.max(1, Math.min(10, Math.round((2 + action.size / 22) * emissionScale * normalizedFlow)));
   const dotScale = 0.65 + Math.min(2, action.size * 0.018);
+  const coverage = movementCoverage(action.pointerSpeed);
+  const particleAlpha = Math.max(0.08, normalizedFlow * (0.22 + coverage * 0.78));
 
   for (let index = 0; index < count; index += 1) {
     const angle = Math.random() * Math.PI * 2;
@@ -560,7 +676,8 @@ function emitSprayFringe(action, point, elapsed) {
     action.fringe.push({
       x: point.x + Math.cos(angle) * distance,
       y: point.y + Math.sin(angle) * distance,
-      r: dotScale * (isEdgeClump ? 0.9 + Math.random() * 0.8 : 0.28 + Math.random() * 0.5)
+      r: dotScale * normalizedFlow * (isEdgeClump ? 0.9 + Math.random() * 0.8 : 0.28 + Math.random() * 0.5),
+      alpha: particleAlpha * (0.72 + Math.random() * 0.28)
     });
   }
 }
@@ -575,6 +692,7 @@ function sprayLoop(timestamp) {
   const distance = Math.hypot(to.x - from.x, to.y - from.y);
   const spacing = Math.max(1.5, action.size * 0.08);
   const steps = Math.max(1, Math.ceil(distance / spacing));
+  const flow = valveFlowAt(action, timestamp);
 
   if (distance >= 0.5) {
     for (let step = 1; step <= steps; step += 1) {
@@ -583,12 +701,15 @@ function sprayLoop(timestamp) {
         x: from.x + (to.x - from.x) * amount,
         y: from.y + (to.y - from.y) * amount
       };
-      action.samples.push(point);
-      emitSprayFringe(action, point, elapsed / steps);
+      addSpraySample(action, point, timestamp, flow);
+      emitSprayFringe(action, point, elapsed / steps, flow);
     }
-  } else if (timestamp - action.lastStationaryFringe > 70) {
-    emitSprayFringe(action, to, Math.min(elapsed, 16.67));
-    action.lastStationaryFringe = timestamp;
+  } else {
+    addSpraySample(action, to, timestamp, flow);
+    if (timestamp - action.lastStationaryFringe > 70) {
+      emitSprayFringe(action, to, Math.min(elapsed, 16.67), flow);
+      action.lastStationaryFringe = timestamp;
+    }
   }
 
   action.lastEmissionPoint = { ...to };
@@ -599,22 +720,27 @@ function sprayLoop(timestamp) {
 
 function beginSpray(event) {
   const point = clientToSurface(event.clientX, event.clientY);
+  const startedAt = performance.now();
   activeAction = {
     type: "spray",
     pointerId: event.pointerId,
     before: clonePieces(),
     color: state.color,
     size: state.spraySize,
-    samples: [point],
+    samples: [],
     fringe: [],
     pointer: point,
     lastEmissionPoint: point,
-    lastTimestamp: performance.now(),
-    lastStationaryFringe: performance.now(),
+    lastTimestamp: startedAt,
+    lastStationaryFringe: startedAt,
+    startedAt,
+    pointerSpeed: 0,
+    lastPointerSample: { point, timestamp: startedAt },
     anchorChains: [getAnchorChainAt(event.clientX, event.clientY)],
     lastAnchorSample: performance.now()
   };
-  emitSprayFringe(activeAction, point, 33.34);
+  addSpraySample(activeAction, point, startedAt, 0.08);
+  emitSprayFringe(activeAction, point, 33.34, 0.08);
   sprayFrame = window.requestAnimationFrame(sprayLoop);
 }
 
@@ -754,12 +880,15 @@ function finalizeSpray(action) {
     size: action.size,
     samples: action.samples.map((sample) => ({
       nx: (sample.x - geometry.x) / geometry.width,
-      ny: (sample.y - geometry.y) / geometry.height
+      ny: (sample.y - geometry.y) / geometry.height,
+      flow: sample.flow,
+      coverage: sample.coverage
     })),
     fringe: action.fringe.map((particle) => ({
       nx: (particle.x - geometry.x) / geometry.width,
       ny: (particle.y - geometry.y) / geometry.height,
-      r: particle.r
+      r: particle.r,
+      alpha: particle.alpha
     })),
     erasures: [],
     particles: []
@@ -767,14 +896,26 @@ function finalizeSpray(action) {
   recordMutation(action.before);
 }
 
-function finishActiveAction() {
+function applySprayRelease(action, releasedAt) {
+  const releaseStart = Math.max(0, releasedAt - action.startedAt - VALVE_RELEASE_MS);
+  for (const sample of action.samples) {
+    if (!Number.isFinite(sample.t) || sample.t < releaseStart) continue;
+    const progress = Math.min(1, (sample.t - releaseStart) / VALVE_RELEASE_MS);
+    sample.flow *= 1 - progress * 0.86;
+  }
+}
+
+function finishActiveAction(showReleaseFeedback = false) {
   if (!activeAction) return;
   const action = activeAction;
   activeAction = null;
   window.cancelAnimationFrame(sprayFrame);
 
   if (action.type === "spray") {
+    const releasedAt = performance.now();
+    applySprayRelease(action, releasedAt);
     finalizeSpray(action);
+    if (showReleaseFeedback && releasedAt - action.startedAt <= QUICK_RELEASE_MS) showQuickReleaseCursorFeedback();
   } else if (action.type === "eraser" && action.changed) {
     recordMutation(action.before);
   } else if (action.type === "pan") {
@@ -787,6 +928,7 @@ function finishActiveAction() {
 function onCanvasPointerDown(event) {
   if (!state.mode || (event.button !== 0 && event.button !== 1)) return;
   event.preventDefault();
+  recordCursorMotion(event.clientX, event.clientY);
   dom.canvas.setPointerCapture(event.pointerId);
 
   if (state.spaceHeld || event.button === 1) {
@@ -801,6 +943,7 @@ function onCanvasPointerDown(event) {
 function onCanvasPointerMove(event) {
   state.cursorClientX = event.clientX;
   state.cursorClientY = event.clientY;
+  recordCursorMotion(event.clientX, event.clientY);
   updateCursor();
 
   if (!activeAction || activeAction.pointerId !== event.pointerId) return;
@@ -812,6 +955,12 @@ function onCanvasPointerMove(event) {
 
   const point = clientToSurface(event.clientX, event.clientY);
   if (activeAction.type === "spray") {
+    const now = performance.now();
+    const previous = activeAction.lastPointerSample;
+    const elapsed = Math.max(1, now - previous.timestamp);
+    const speed = Math.hypot(point.x - previous.point.x, point.y - previous.point.y) / elapsed;
+    activeAction.pointerSpeed = activeAction.pointerSpeed * 0.55 + speed * 0.45;
+    activeAction.lastPointerSample = { point, timestamp: now };
     activeAction.pointer = point;
     if (performance.now() - activeAction.lastAnchorSample > 45) {
       activeAction.anchorChains.push(getAnchorChainAt(event.clientX, event.clientY));
@@ -827,7 +976,7 @@ function onCanvasPointerMove(event) {
 function onCanvasPointerUp(event) {
   if (!activeAction || activeAction.pointerId !== event.pointerId) return;
   if (dom.canvas.hasPointerCapture(event.pointerId)) dom.canvas.releasePointerCapture(event.pointerId);
-  finishActiveAction();
+  finishActiveAction(event.type === "pointerup");
 }
 
 function onViewportPointerDown(event) {

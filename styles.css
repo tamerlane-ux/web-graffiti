@@ -1095,6 +1095,7 @@ body.graffiti-mode.is-panning #graffiti-canvas {
 }
 
 .brush-cursor {
+  --cursor-density: 0.06;
   position: fixed;
   z-index: 90;
   display: none;
@@ -1105,6 +1106,17 @@ body.graffiti-mode.is-panning #graffiti-canvas {
   border-radius: 50%;
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  transition: width 180ms ease-out, height 180ms ease-out, border-color 120ms linear, box-shadow 180ms ease-out;
+}
+
+.brush-cursor::before {
+  position: absolute;
+  inset: 3px;
+  border-radius: inherit;
+  background: currentColor;
+  content: "";
+  opacity: var(--cursor-density);
+  transition: opacity 120ms linear;
 }
 
 .brush-cursor.is-visible {
@@ -1114,6 +1126,10 @@ body.graffiti-mode.is-panning #graffiti-canvas {
 .brush-cursor.is-eraser {
   border: 2px dashed #fff;
   box-shadow: 0 0 0 1px #111;
+}
+
+.brush-cursor.is-eraser::before {
+  opacity: 0;
 }
 
 .toast {
