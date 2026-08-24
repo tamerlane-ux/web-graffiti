@@ -128,30 +128,75 @@ async function paintStats(page) {
   assert.equal(customPreview, "rgb(18, 171, 52)", "HEX input should update the custom color preview");
   await page.locator("#picker-close").click();
 
-  const scrollBeforePan = await page.evaluate(() => window.scrollY);
+  const viewportBeforePan = await page.locator("#site-surface").evaluate((surface) => ({
+    transform: surface.style.transform,
+    scrollY: window.scrollY
+  }));
+  await page.mouse.move(720, 500);
+  await page.mouse.wheel(0, 180);
+  const viewportAfterWheel = await page.locator("#site-surface").evaluate((surface) => ({
+    transform: surface.style.transform,
+    scrollY: window.scrollY
+  }));
+  assert.notEqual(viewportAfterWheel.transform, viewportBeforePan.transform, "mouse-wheel scrolling should move the editor canvas vertically");
+  assert.equal(viewportAfterWheel.scrollY, viewportBeforePan.scrollY, "editor scrolling should not move the browser window");
+
   await page.keyboard.down("Space");
   await page.mouse.move(720, 700);
   await page.mouse.down();
   await page.mouse.move(720, 500, { steps: 8 });
   await page.mouse.up();
   await page.keyboard.up("Space");
-  const scrollAfterPan = await page.evaluate(() => window.scrollY);
-  assert.ok(scrollAfterPan > scrollBeforePan, "Space-drag should pan the zoomed website surface");
-  await page.evaluate(() => window.scrollTo(0, 0));
+  const viewportAfterPan = await page.locator("#site-surface").evaluate((surface) => ({
+    transform: surface.style.transform,
+    scrollY: window.scrollY
+  }));
+  assert.notEqual(viewportAfterPan.transform, viewportAfterWheel.transform, "Space-drag should pan the editor canvas");
+  assert.equal(viewportAfterPan.scrollY, viewportBeforePan.scrollY, "canvas panning should not use the browser window scroll");
 
+  const controlsBeforeZoom = await page.locator(".zoom-controls").boundingBox();
   await page.locator("#zoom-in").click();
   await page.waitForTimeout(80);
-  assert.equal(await page.locator("#zoom-value").textContent(), "110%", "zoom controls should update the page zoom");
+  assert.equal(await page.locator("#zoom-value").textContent(), "5%", "zoom controls should use the remapped editor zoom percentage");
+  const creativeZoom = await page.locator("#site-surface").evaluate((surface) => ({
+    transform: surface.style.transform,
+    cssZoom: surface.style.zoom
+  }));
+  const controlsAfterZoom = await page.locator(".zoom-controls").boundingBox();
+  assert.match(creativeZoom.transform, /scale\(1\.15\)/, "zoom should transform the editor canvas");
+  assert.equal(creativeZoom.cssZoom, "", "zoom should not use the browser-like CSS zoom property");
+  assert.equal(controlsAfterZoom.width, controlsBeforeZoom.width, "zoom should keep editor controls at a fixed screen size");
+  assert.equal(controlsAfterZoom.height, controlsBeforeZoom.height, "zoom should keep editor control typography and layout fixed");
 
-  await page.locator("#zoom-slider").fill("125");
+  await page.locator("#zoom-slider").fill("25");
   await page.waitForTimeout(80);
-  assert.equal(await page.locator("#zoom-value").textContent(), "125%", "zoom slider should update the page zoom in five-percent increments");
+  assert.equal(await page.locator("#zoom-value").textContent(), "25%", "zoom slider should update the page zoom in five-percent increments");
   assert.equal(await page.locator(".zoom-controls").evaluate((node) => node.classList.contains("show-readout")), true, "zoom slider should show visual percentage feedback");
+
+  const transformBeforeHorizontalScroll = await page.locator("#site-surface").evaluate((surface) => surface.style.transform);
+  await page.mouse.move(720, 400);
+  await page.mouse.wheel(180, 0);
+  const transformAfterHorizontalScroll = await page.locator("#site-surface").evaluate((surface) => surface.style.transform);
+  assert.notEqual(transformAfterHorizontalScroll, transformBeforeHorizontalScroll, "trackpad-style horizontal scrolling should move the zoomed canvas left and right");
+
+  await page.locator("#zoom-slider").fill("100");
+  await page.waitForTimeout(80);
+  assert.equal(await page.locator("#zoom-value").textContent(), "100%", "the top of the remapped control should retain 4× detail magnification");
+
+  await page.locator("#spray-tool").click();
+  await page.mouse.move(680, 330);
+  await page.mouse.down();
+  await page.mouse.move(760, 350, { steps: 16 });
+  await page.mouse.up();
+  await page.waitForTimeout(80);
+  assert.equal((await storedPieces(page)).length, 4, "drawing coordinates should stay aligned at maximum canvas zoom");
 
   await page.locator("#zoom-reset").click();
   await page.waitForTimeout(80);
-  assert.equal(await page.locator("#zoom-value").textContent(), "100%", "reset icon should restore 100% zoom");
+  assert.equal(await page.locator("#zoom-value").textContent(), "0%", "reset icon should restore the full-size baseline");
   assert.equal(await page.locator("#zoom-reset img").isVisible(), true, "reset zoom should use an icon");
+  assert.equal(await page.locator("#zoom-out").isDisabled(), true, "the page should not zoom out below its full-size baseline");
+  assert.match(await page.locator("#site-surface").evaluate((surface) => surface.style.transform), /scale\(1\)/, "0% should map to the original full-size page");
 
   await page.locator("#close-mode").click();
   assert.equal(await page.locator("#graffiti-controls").isVisible(), false, "close control should leave Graffiti Mode");

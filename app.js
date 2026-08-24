@@ -2,12 +2,14 @@
 
 const STORAGE_PREFIX = "web-graffiti:page:";
 const CREATOR_KEY = "web-graffiti:anonymous-creator";
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 2;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = (MAX_ZOOM - MIN_ZOOM) * 0.05;
 const HISTORY_LIMIT = 24;
 
 const dom = {
   body: document.body,
+  shell: document.querySelector("#surface-shell"),
   surface: document.querySelector("#site-surface"),
   canvas: document.querySelector("#graffiti-canvas"),
   launch: document.querySelector("#graffiti-launch"),
@@ -72,6 +74,9 @@ const state = {
   spraySize: 36,
   eraserSize: 48,
   zoom: 1,
+  panX: 0,
+  panY: 0,
+  browsingScrollY: 0,
   spaceHeld: false,
   cursorClientX: 0,
   cursorClientY: 0,
@@ -378,6 +383,12 @@ function setMode(enabled) {
   if (enabled === state.mode) return;
   if (!enabled) finishActiveAction();
 
+  if (enabled) {
+    state.browsingScrollY = window.scrollY;
+    state.panX = 0;
+    state.panY = -state.browsingScrollY;
+  }
+
   state.mode = enabled;
   dom.body.classList.toggle("graffiti-mode", enabled);
   dom.launch.hidden = enabled;
@@ -391,11 +402,15 @@ function setMode(enabled) {
   updateHistoryButtons();
 
   if (enabled) {
+    applyViewportTransform();
     updateToolInterface();
     showToast("Graffiti Mode is active. Website controls are locked.");
   } else {
+    const returnScrollY = Math.max(0, -state.panY / state.zoom);
     state.spaceHeld = false;
     dom.body.classList.remove("is-panning");
+    dom.surface.style.transform = "";
+    window.scrollTo(0, returnScrollY);
     showToast("Graffiti Mode closed. Website controls are active.");
   }
 }
@@ -620,6 +635,14 @@ function beginPan(event) {
   dom.cursor.classList.remove("is-visible");
 }
 
+function moveViewportPan(event) {
+  state.panX += event.clientX - activeAction.clientX;
+  state.panY += event.clientY - activeAction.clientY;
+  activeAction.clientX = event.clientX;
+  activeAction.clientY = event.clientY;
+  applyViewportTransform();
+}
+
 function finalizeSpray(action) {
   if (action.samples.length === 0) return;
   const anchorId = chooseCommonAnchor(action.anchorChains);
@@ -665,11 +688,11 @@ function finishActiveAction() {
 }
 
 function onCanvasPointerDown(event) {
-  if (!state.mode || event.button !== 0) return;
+  if (!state.mode || (event.button !== 0 && event.button !== 1)) return;
   event.preventDefault();
   dom.canvas.setPointerCapture(event.pointerId);
 
-  if (state.spaceHeld) {
+  if (state.spaceHeld || event.button === 1) {
     beginPan(event);
   } else if (state.tool === "eraser") {
     beginEraser(event);
@@ -686,9 +709,7 @@ function onCanvasPointerMove(event) {
   if (!activeAction || activeAction.pointerId !== event.pointerId) return;
 
   if (activeAction.type === "pan") {
-    window.scrollBy(activeAction.clientX - event.clientX, activeAction.clientY - event.clientY);
-    activeAction.clientX = event.clientX;
-    activeAction.clientY = event.clientY;
+    moveViewportPan(event);
     return;
   }
 
@@ -712,9 +733,30 @@ function onCanvasPointerUp(event) {
   finishActiveAction();
 }
 
+function onViewportPointerDown(event) {
+  const wantsPan = event.button === 1 || (event.button === 0 && state.spaceHeld);
+  if (!state.mode || event.target !== dom.shell || !wantsPan) return;
+  event.preventDefault();
+  dom.shell.setPointerCapture(event.pointerId);
+  beginPan(event);
+}
+
+function onViewportPointerMove(event) {
+  if (!activeAction || activeAction.type !== "pan" || activeAction.pointerId !== event.pointerId) return;
+  if (!dom.shell.hasPointerCapture(event.pointerId)) return;
+  moveViewportPan(event);
+}
+
+function onViewportPointerUp(event) {
+  if (!activeAction || activeAction.type !== "pan" || activeAction.pointerId !== event.pointerId) return;
+  if (!dom.shell.hasPointerCapture(event.pointerId)) return;
+  dom.shell.releasePointerCapture(event.pointerId);
+  finishActiveAction();
+}
+
 function syncZoomControl() {
-  const percentage = Math.round(state.zoom * 100);
   const normalized = (state.zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
+  const percentage = Math.round(normalized * 100);
   dom.zoomSlider.value = String(percentage);
   dom.zoomSlider.setAttribute("aria-valuetext", percentage + "%");
   dom.zoomSlider.style.setProperty("--zoom-fill", normalized * 100 + "%");
@@ -733,6 +775,34 @@ function showZoomFeedback() {
   }, 900);
 }
 
+function clampViewportPan() {
+  if (!state.mode) return;
+
+  const scaledWidth = dom.surface.scrollWidth * state.zoom;
+  const scaledHeight = dom.surface.scrollHeight * state.zoom;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  if (scaledWidth <= viewportWidth) {
+    state.panX = (viewportWidth - scaledWidth) / 2;
+  } else {
+    state.panX = Math.max(viewportWidth - scaledWidth, Math.min(0, state.panX));
+  }
+
+  if (scaledHeight <= viewportHeight) {
+    state.panY = (viewportHeight - scaledHeight) / 2;
+  } else {
+    state.panY = Math.max(viewportHeight - scaledHeight, Math.min(0, state.panY));
+  }
+}
+
+function applyViewportTransform() {
+  if (!state.mode) return;
+  clampViewportPan();
+  dom.surface.style.transform = `translate3d(${state.panX}px, ${state.panY}px, 0) scale(${state.zoom})`;
+  updateCursor();
+}
+
 function setZoom(nextZoom, clientX = window.innerWidth / 2, clientY = window.innerHeight / 2) {
   const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(nextZoom * 20) / 20));
   if (next === state.zoom) {
@@ -742,22 +812,18 @@ function setZoom(nextZoom, clientX = window.innerWidth / 2, clientY = window.inn
   }
 
   const oldZoom = state.zoom;
-  const oldRect = dom.surface.getBoundingClientRect();
-  const localX = (clientX - oldRect.left) / oldZoom;
-  const localY = (clientY - oldRect.top) / oldZoom;
+  const localX = (clientX - state.panX) / oldZoom;
+  const localY = (clientY - state.panY) / oldZoom;
   state.zoom = next;
-  dom.surface.style.zoom = String(next);
+  state.panX = clientX - localX * next;
+  state.panY = clientY - localY * next;
+  applyViewportTransform();
   syncZoomControl();
   showZoomFeedback();
-  updateCursor();
+}
 
-  window.requestAnimationFrame(() => {
-    const newRect = dom.surface.getBoundingClientRect();
-    const deltaX = newRect.left + localX * next - clientX;
-    const deltaY = newRect.top + localY * next - clientY;
-    window.scrollBy(deltaX, deltaY);
-    resizeCanvas();
-  });
+function percentageToZoom(percentage) {
+  return MIN_ZOOM + (Math.max(0, Math.min(100, percentage)) / 100) * (MAX_ZOOM - MIN_ZOOM);
 }
 
 function clampChannel(value) {
@@ -998,16 +1064,17 @@ dom.hexInput.addEventListener("input", () => {
 
 dom.undo.addEventListener("click", undo);
 dom.redo.addEventListener("click", redo);
-dom.zoomIn.addEventListener("click", () => setZoom(state.zoom + 0.1));
-dom.zoomOut.addEventListener("click", () => setZoom(state.zoom - 0.1));
-dom.zoomReset.addEventListener("click", () => setZoom(1));
-dom.zoomSlider.addEventListener("input", (event) => setZoom(Number(event.currentTarget.value) / 100));
+dom.zoomIn.addEventListener("click", () => setZoom(state.zoom + ZOOM_STEP));
+dom.zoomOut.addEventListener("click", () => setZoom(state.zoom - ZOOM_STEP));
+dom.zoomReset.addEventListener("click", () => setZoom(MIN_ZOOM));
+dom.zoomSlider.addEventListener("input", (event) => setZoom(percentageToZoom(Number(event.currentTarget.value))));
 dom.zoomSlider.addEventListener("pointerdown", showZoomFeedback);
 
 dom.canvas.addEventListener("pointerdown", onCanvasPointerDown);
 dom.canvas.addEventListener("pointermove", onCanvasPointerMove);
 dom.canvas.addEventListener("pointerup", onCanvasPointerUp);
 dom.canvas.addEventListener("pointercancel", onCanvasPointerUp);
+dom.canvas.addEventListener("auxclick", (event) => event.preventDefault());
 dom.canvas.addEventListener("pointerenter", (event) => {
   state.cursorInside = true;
   state.cursorClientX = event.clientX;
@@ -1020,11 +1087,32 @@ dom.canvas.addEventListener("pointerleave", () => {
     updateCursor();
   }
 });
-dom.canvas.addEventListener("wheel", (event) => {
-  if (!state.mode || !event.ctrlKey) return;
+window.addEventListener("wheel", (event) => {
+  if (!state.mode) return;
   event.preventDefault();
-  setZoom(state.zoom + (event.deltaY < 0 ? 0.1 : -0.1), event.clientX, event.clientY);
+
+  if (event.ctrlKey || event.metaKey) {
+    setZoom(state.zoom + (event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP), event.clientX, event.clientY);
+    return;
+  }
+
+  const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+      ? window.innerHeight
+      : 1;
+  const horizontalDelta = event.deltaX || (event.shiftKey ? event.deltaY : 0);
+  const verticalDelta = event.shiftKey && !event.deltaX ? 0 : event.deltaY;
+  state.panX -= horizontalDelta * unit;
+  state.panY -= verticalDelta * unit;
+  applyViewportTransform();
 }, { passive: false });
+
+dom.shell.addEventListener("pointerdown", onViewportPointerDown);
+dom.shell.addEventListener("pointermove", onViewportPointerMove);
+dom.shell.addEventListener("pointerup", onViewportPointerUp);
+dom.shell.addEventListener("pointercancel", onViewportPointerUp);
+dom.shell.addEventListener("auxclick", (event) => event.preventDefault());
 
 dom.prototypeToggle.addEventListener("click", () => {
   const open = dom.prototypePanel.hidden;
@@ -1051,6 +1139,24 @@ window.addEventListener("keydown", (event) => {
   }
 
   if (!state.mode || editingText) return;
+
+  if ((event.ctrlKey || event.metaKey) && ["+", "=", "-", "0"].includes(event.key)) {
+    event.preventDefault();
+    if (event.key === "0") setZoom(MIN_ZOOM);
+    else setZoom(state.zoom + (event.key === "-" ? -ZOOM_STEP : ZOOM_STEP));
+    return;
+  }
+
+  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+    event.preventDefault();
+    const panStep = event.shiftKey ? 160 : 64;
+    if (event.key === "ArrowUp") state.panY += panStep;
+    else if (event.key === "ArrowDown") state.panY -= panStep;
+    else if (event.key === "ArrowLeft") state.panX += panStep;
+    else state.panX -= panStep;
+    applyViewportTransform();
+    return;
+  }
 
   if (event.code === "Space") {
     state.spaceHeld = true;
@@ -1093,14 +1199,16 @@ window.addEventListener("hashchange", () => {
 });
 
 window.addEventListener("beforeunload", persistPieces);
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener("resize", () => {
+  resizeCanvas();
+  applyViewportTransform();
+});
 
 if (window.ResizeObserver) {
   const surfaceObserver = new ResizeObserver(resizeCanvas);
   surfaceObserver.observe(dom.surface);
 }
 
-dom.surface.style.zoom = "1";
 syncZoomControl();
 dom.previousColor.style.background = state.color;
 applyCustomColor(state.customColor);

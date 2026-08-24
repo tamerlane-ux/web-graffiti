@@ -25,7 +25,7 @@ If Node.js is installed globally, `pnpm dev` works as an alternative. The PowerS
 - Open **Graffiti mode** from the bottom-center button.
 - Draw with the mouse; choose Spray or Eraser from the bottom Palette.
 - Adjust the active tool with the continuous thickness slider.
-- Drag the right-side zoom slider, use its +/− controls, or use `Ctrl`/`Cmd` + wheel to zoom around the cursor. Use the circular-arrow icon to return to 100%, and hold Space while dragging to pan.
+- Drag the right-side zoom slider, use its +/− controls, or use `Ctrl`/`Cmd` + wheel to zoom the drawing canvas around the cursor. The editor scale runs from 0% (the page's full-size baseline) to 100% (4× magnification), and cannot shrink below 0%. Scroll vertically with the wheel, horizontally with a trackpad or `Shift` + wheel, and pan freely with Space-drag or middle-mouse drag. The circular-arrow icon returns to 0%.
 - Undo with `Ctrl`/`Cmd` + `Z`; redo with `Ctrl`/`Cmd` + `Shift` + `Z` or `Ctrl` + `Y`.
 - Close Graffiti Mode with the `×` at the end of the Palette or `Esc`.
 - Open the upper-left **Prototype** badge to reset locally stored graffiti.

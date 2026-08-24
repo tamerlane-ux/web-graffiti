@@ -58,6 +58,27 @@ input:focus-visible,
   transform-origin: 0 0;
 }
 
+body.graffiti-mode {
+  overflow: hidden;
+}
+
+body.graffiti-mode #surface-shell {
+  position: fixed;
+  z-index: 1;
+  inset: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--paper);
+  overscroll-behavior: none;
+}
+
+body.graffiti-mode #site-surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
 .site-header {
   position: relative;
   z-index: 1;
