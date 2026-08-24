@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A local interaction prototype for drawing spray-paint graffiti over a generic website." />
+    <title>Web Graffiti — Drawing Sandbox</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23111'/%3E%3Ccircle cx='19' cy='20' r='3' fill='white'/%3E%3Ccircle cx='31' cy='15' r='2' fill='white'/%3E%3Ccircle cx='44' cy='22' r='4' fill='white'/%3E%3Ccircle cx='25' cy='36' r='5' fill='white'/%3E%3Ccircle cx='42' cy='43' r='3' fill='white'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="surface-shell">
+      <div id="site-surface" data-graffiti-anchor="page-root">
+        <header class="site-header" data-graffiti-anchor="site-header">
+          <a class="wordmark" href="#top" aria-label="Field Notes home">Field Notes</a>
+          <nav class="site-nav" aria-label="Primary navigation">
+            <a href="#dispatches">Dispatches</a>
+            <a href="#observations">Observations</a>
+            <a href="#reading-list">Reading list</a>
+          </nav>
+          <button class="site-button" id="subscribe-button" type="button">Subscribe</button>
+        </header>
+
+        <main id="top">
+          <section class="hero" data-graffiti-anchor="hero">
+            <div class="hero-copy" data-graffiti-anchor="hero-copy">
+              <p class="eyebrow">The city issue · No. 08</p>
+              <h1>The overlooked spaces that make a city feel alive</h1>
+              <p class="dek">
+                A field guide to the thresholds, shortcuts, blank walls, and accidental meeting places
+                that exist between a city’s official destinations.
+              </p>
+              <div class="byline">
+                <span>Words by Mira Lane</span>
+                <span>12 minute read</span>
+              </div>
+            </div>
+            <div class="hero-visual image-placeholder" data-graffiti-anchor="hero-image" aria-label="Abstract architectural image placeholder">
+              <span>Image study 01</span>
+            </div>
+          </section>
+
+          <article class="article-layout" data-graffiti-anchor="article">
+            <aside class="article-aside" data-graffiti-anchor="article-aside">
+              <p class="aside-label">In this story</p>
+              <ol>
+                <li><a href="#dispatches">Useful edges</a></li>
+                <li><a href="#observations">Informal signals</a></li>
+                <li><a href="#reading-list">A slower map</a></li>
+              </ol>
+              <button class="text-button" id="bookmark-button" type="button" aria-pressed="false">Save for later</button>
+            </aside>
+
+            <div class="article-body">
+              <section id="dispatches" class="story-section" data-graffiti-anchor="section-dispatches">
+                <p class="lead">
+                  The most memorable parts of a neighborhood are rarely the places circled on a visitor’s map.
+                  They are the steps where people pause, the painted shutters used as landmarks, and the narrow
+                  passages that turn a long route into a familiar one.
+                </p>
+                <p>
+                  These spaces are useful because they are unfinished. A ledge can be a seat at noon and a tiny
+                  stage at night. A blank side wall can hold a shifting record of local announcements, weather,
+                  and passing moods. Their meaning is made through use rather than assigned in advance.
+                </p>
+
+                <blockquote data-graffiti-anchor="quote-useful">
+                  “The city becomes legible when people leave small signals for one another.”
+                  <cite>— Notes from a neighborhood walk</cite>
+                </blockquote>
+
+                <p>
+                  We walked the same six blocks at three different hours and found three different versions of
+                  the route. Deliveries defined the morning, lunch queues redrew the pavement at midday, and
+                  music spilling from open doors marked the evening path.
+                </p>
+              </section>
+
+              <section class="wide-figure" data-graffiti-anchor="figure-crossing">
+                <div class="image-placeholder figure-image" aria-label="Abstract street crossing image placeholder">
+                  <span>Image study 02</span>
+                </div>
+                <p class="caption">A crossing shaped as much by habit as by painted lines.</p>
+              </section>
+
+              <section id="observations" class="story-section" data-graffiti-anchor="section-observations">
+                <p class="eyebrow">Three observations</p>
+                <h2>Informal signals carry real weight</h2>
+                <p>
+                  A polished sign asks to be read. An improvised mark asks to be noticed. The distinction matters:
+                  one announces authority, while the other suggests that somebody stood here and needed the next
+                  person to understand something quickly.
+                </p>
+
+                <div class="observation-grid" data-graffiti-anchor="observation-grid">
+                  <article class="observation-card" data-graffiti-anchor="card-repetition">
+                    <span class="card-number">01</span>
+                    <h3>Repetition builds trust</h3>
+                    <p>A mark seen across several days slowly becomes part of the place.</p>
+                  </article>
+                  <article class="observation-card" data-graffiti-anchor="card-contrast">
+                    <span class="card-number">02</span>
+                    <h3>Contrast finds attention</h3>
+                    <p>Small interruptions are often easier to remember than large instructions.</p>
+                  </article>
+                  <article class="observation-card" data-graffiti-anchor="card-change">
+                    <span class="card-number">03</span>
+                    <h3>Change creates a record</h3>
+                    <p>Layers reveal what stayed, what disappeared, and what somebody restored.</p>
+                  </article>
+                </div>
+              </section>
+
+              <section class="split-feature" data-graffiti-anchor="split-feature">
+                <div class="image-placeholder portrait-placeholder" aria-label="Abstract facade image placeholder">
+                  <span>Image study 03</span>
+                </div>
+                <div class="split-copy" data-graffiti-anchor="split-copy">
+                  <p class="eyebrow">Field note</p>
+                  <h2>A wall is also a timeline</h2>
+                  <p>
+                    Fresh paint, old outlines, repaired brick, and sun-faded paper can occupy the same square
+                    metre. Reading the surface means noticing how each layer negotiates with the ones below it.
+                  </p>
+                </div>
+              </section>
+
+              <section id="reading-list" class="story-section final-section" data-graffiti-anchor="section-reading-list">
+                <p class="eyebrow">Further reading</p>
+                <h2>A slower map of everyday places</h2>
+                <p>
+                  The best map for this kind of city is not a finished diagram. It is a collection of observations
+                  that can be revised whenever the street offers better evidence.
+                </p>
+                <div class="reading-list" data-graffiti-anchor="reading-list">
+                  <a href="#top"><span>01</span><strong>Walking as a way of measuring</strong><em>6 min</em></a>
+                  <a href="#top"><span>02</span><strong>The social life of a useful corner</strong><em>9 min</em></a>
+                  <a href="#top"><span>03</span><strong>Signs nobody officially designed</strong><em>7 min</em></a>
+                </div>
+              </section>
+            </div>
+          </article>
+        </main>
+
+        <footer class="site-footer" data-graffiti-anchor="site-footer">
+          <p>Field Notes is an independent journal about ordinary places.</p>
+          <a href="#top">Back to top</a>
+        </footer>
+
+        <canvas id="graffiti-canvas" aria-label="Graffiti drawing surface"></canvas>
+      </div>
+    </div>
+
+    <div class="prototype-corner">
+      <button id="prototype-toggle" class="prototype-badge" type="button" aria-expanded="false" aria-controls="prototype-panel">
+        Prototype
+      </button>
+      <div id="prototype-panel" class="prototype-panel" hidden>
+        <p>Development controls</p>
+        <button id="reset-prototype" type="button">Reset prototype data</button>
+      </div>
+    </div>
+
+    <button id="graffiti-launch" class="graffiti-launch" type="button" aria-label="Open Graffiti Mode">
+      <span class="spray-icon" aria-hidden="true"></span>
+      <span>Graffiti mode</span>
+    </button>
+
+    <div id="graffiti-controls" class="graffiti-controls" hidden>
+      <div class="history-controls" aria-label="History controls">
+        <button id="undo-button" class="icon-button" type="button" aria-label="Undo" title="Undo (Ctrl/Cmd + Z)" disabled>↶</button>
+        <button id="redo-button" class="icon-button" type="button" aria-label="Redo" title="Redo (Ctrl/Cmd + Shift + Z)" disabled>↷</button>
+      </div>
+
+      <div class="zoom-controls" aria-label="Zoom controls">
+        <button id="zoom-in" class="zoom-step" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+        <div id="zoom-slider-wrap" class="zoom-slider-wrap">
+          <input id="zoom-slider" class="zoom-slider" type="range" min="50" max="200" step="5" value="100" aria-label="Zoom level" />
+          <output id="zoom-value" class="zoom-value" for="zoom-slider" aria-live="polite">100%</output>
+        </div>
+        <button id="zoom-out" class="zoom-step" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+        <span class="zoom-divider" aria-hidden="true"></span>
+        <button id="zoom-reset" class="zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom">
+          <img src="./assets/reset-zoom.svg" alt="" width="18" height="18" />
+        </button>
+      </div>
+
+      <div class="dock-stack">
+        <div id="color-picker" class="color-picker" hidden>
+          <div class="picker-heading">
+            <strong>Custom color</strong>
+            <button id="picker-close" type="button" aria-label="Close color picker">×</button>
+          </div>
+          <div id="sv-field" class="sv-field" role="slider" aria-label="Saturation and brightness" tabindex="0">
+            <span id="sv-handle"></span>
+          </div>
+          <label class="hue-control">
+            <span>Hue</span>
+            <input id="hue-input" type="range" min="0" max="360" value="0" />
+          </label>
+          <div class="picker-swatches" aria-label="Color comparison">
+            <span>Previous</span><span id="previous-color" class="color-preview"></span>
+            <span>Current</span><span id="current-color" class="color-preview"></span>
+          </div>
+          <label class="hex-row">
+            <span>HEX</span>
+            <input id="hex-input" type="text" value="#000000" maxlength="7" spellcheck="false" />
+          </label>
+          <fieldset class="rgb-inputs">
+            <legend>RGB</legend>
+            <label>R<input id="red-input" type="number" min="0" max="255" value="0" /></label>
+            <label>G<input id="green-input" type="number" min="0" max="255" value="0" /></label>
+            <label>B<input id="blue-input" type="number" min="0" max="255" value="0" /></label>
+          </fieldset>
+        </div>
+
+        <div class="thickness-panel">
+          <div class="thickness-heading">
+            <span id="thickness-tool">Spray thickness</span>
+            <output id="thickness-value">36 px</output>
+          </div>
+          <input id="thickness-slider" type="range" min="8" max="140" value="36" aria-label="Spray thickness" />
+        </div>
+
+        <div class="palette" role="toolbar" aria-label="Graffiti Palette">
+          <div class="tool-group" aria-label="Drawing tools">
+            <button id="spray-tool" class="tool-button is-active" type="button" aria-pressed="true" title="Spray">
+              <span class="spray-icon" aria-hidden="true"></span><span class="tool-label">Spray</span>
+            </button>
+            <button id="eraser-tool" class="tool-button" type="button" aria-pressed="false" title="Eraser">
+              <span class="eraser-icon" aria-hidden="true"></span><span class="tool-label">Eraser</span>
+            </button>
+          </div>
+
+          <div class="palette-divider" aria-hidden="true"></div>
+
+          <div class="color-swatches" aria-label="Preset colors">
+            <button class="color-swatch is-selected" data-color="#111111" style="--swatch:#111111" type="button" aria-label="Black" aria-pressed="true"></button>
+            <button class="color-swatch is-light" data-color="#ffffff" style="--swatch:#ffffff" type="button" aria-label="White" aria-pressed="false"></button>
+            <button class="color-swatch" data-color="#e53935" style="--swatch:#e53935" type="button" aria-label="Red" aria-pressed="false"></button>
+            <button class="color-swatch" data-color="#f57c00" style="--swatch:#f57c00" type="button" aria-label="Orange" aria-pressed="false"></button>
+            <button class="color-swatch is-light" data-color="#fdd835" style="--swatch:#fdd835" type="button" aria-label="Yellow" aria-pressed="false"></button>
+            <button class="color-swatch" data-color="#43a047" style="--swatch:#43a047" type="button" aria-label="Green" aria-pressed="false"></button>
+            <button class="color-swatch" data-color="#1e88e5" style="--swatch:#1e88e5" type="button" aria-label="Blue" aria-pressed="false"></button>
+            <button class="color-swatch" data-color="#7e57c2" style="--swatch:#7e57c2" type="button" aria-label="Purple" aria-pressed="false"></button>
+            <button id="custom-color-button" class="custom-color-button" type="button" aria-label="Choose a custom color" aria-expanded="false" title="Custom color">
+              <span id="custom-color-preview"></span>
+              <span aria-hidden="true">+</span>
+            </button>
+          </div>
+
+          <div class="palette-divider" aria-hidden="true"></div>
+
+          <button id="close-mode" class="close-mode" type="button" aria-label="Close Graffiti Mode" title="Close Graffiti Mode (Esc)">×</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="brush-cursor" class="brush-cursor" aria-hidden="true"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script>
+      if (window.location.protocol === "file:") {
+        document.write('<script src="./app.js"><\\/script>');
+      }
+    </script>
+    <script type="module">
+      if (window.location.protocol !== "file:") {
+        await import("./app.js");
+      }
+      if (import.meta.env?.DEV) {
+        import("./agentation-entry.js");
+      }
+    </script>
+  </body>
+</html>
