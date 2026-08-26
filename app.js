@@ -8,6 +8,7 @@ const ZOOM_STEP = (MAX_ZOOM - MIN_ZOOM) * 0.05;
 const HISTORY_LIMIT = 24;
 const TILE_SIZE = 512;
 const TILE_OVERSCAN = 1;
+const ZOOM_RASTER_SETTLE_MS = 150;
 const VALVE_OPEN_MS = 135;
 const VALVE_RELEASE_MS = 65;
 const QUICK_RELEASE_MS = 190;
@@ -18,6 +19,7 @@ const dom = {
   shell: document.querySelector("#surface-shell"),
   surface: document.querySelector("#site-surface"),
   tiles: document.querySelector("#graffiti-tiles"),
+  activePaint: document.querySelector("#graffiti-active-paint"),
   canvas: document.querySelector("#graffiti-canvas"),
   launch: document.querySelector("#graffiti-launch"),
   controls: document.querySelector("#graffiti-controls"),
@@ -71,6 +73,7 @@ let sprayFrame = 0;
 let toastTimer = 0;
 let resizeFrame = 0;
 let zoomFeedbackTimer = 0;
+let zoomRasterTimer = 0;
 let canvasCssWidth = 0;
 let canvasCssHeight = 0;
 let canvasRenderScale = 1;
@@ -394,7 +397,7 @@ function drawRenderablePiece(targetContext, rendered) {
   targetContext.globalCompositeOperation = "source-over";
 }
 
-function renderTile(tile, renderedPieces, activeRendered) {
+function renderTile(tile, renderedPieces) {
   const canvas = getTile(tile);
   const tileContext = canvas.getContext("2d");
   tileContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -419,10 +422,54 @@ function renderTile(tile, renderedPieces, activeRendered) {
     tileContext.drawImage(pieceCanvas, 0, 0);
     setTileTransform(tileContext);
   }
-  if (activeRendered && overlapsTile(activeRendered.bounds, tile)) drawSprayMark(tileContext, activeRendered.color, activeRendered.samples, activeRendered.size, activeRendered.fringe);
 }
 
-function render({ activeOnly = false } = {}) {
+function clearActivePaint() {
+  dom.activePaint.style.display = "none";
+  dom.activePaint.width = 0;
+  dom.activePaint.height = 0;
+}
+
+function renderActivePaint() {
+  if (!activeAction || activeAction.type !== "spray") {
+    clearActivePaint();
+    return;
+  }
+
+  const bounds = boundsFromPoints(activeAction.samples, activeAction.fringe, activeAction.size * 0.5);
+  if (!bounds) {
+    clearActivePaint();
+    return;
+  }
+
+  const padding = 2;
+  const left = Math.max(0, Math.floor(bounds.left - padding));
+  const top = Math.max(0, Math.floor(bounds.top - padding));
+  const right = Math.min(canvasCssWidth, Math.ceil(bounds.right + padding));
+  const bottom = Math.min(canvasCssHeight, Math.ceil(bounds.bottom + padding));
+  const width = Math.max(1, right - left);
+  const height = Math.max(1, bottom - top);
+  const pixelWidth = Math.ceil(width * canvasRenderScale);
+  const pixelHeight = Math.ceil(height * canvasRenderScale);
+
+  if (dom.activePaint.width !== pixelWidth || dom.activePaint.height !== pixelHeight) {
+    dom.activePaint.width = pixelWidth;
+    dom.activePaint.height = pixelHeight;
+  }
+  dom.activePaint.style.left = left + "px";
+  dom.activePaint.style.top = top + "px";
+  dom.activePaint.style.width = width + "px";
+  dom.activePaint.style.height = height + "px";
+  dom.activePaint.style.display = "block";
+
+  const context = dom.activePaint.getContext("2d");
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, pixelWidth, pixelHeight);
+  context.setTransform(canvasRenderScale, 0, 0, canvasRenderScale, -left * canvasRenderScale, -top * canvasRenderScale);
+  drawSprayMark(context, activeAction.color, activeAction.samples, activeAction.size, activeAction.fringe);
+}
+
+function render() {
   if (!canvasCssWidth || !canvasCssHeight) return;
   const visibleTiles = getVisibleTiles();
   const requiredKeys = new Set(visibleTiles.map((tile) => tile.key));
@@ -432,19 +479,13 @@ function render({ activeOnly = false } = {}) {
       tileCache.delete(key);
     }
   }
-  const activeRendered = activeAction && activeAction.type === "spray"
-    ? { color: activeAction.color, size: activeAction.size, samples: activeAction.samples, fringe: activeAction.fringe, bounds: boundsFromPoints(activeAction.samples, activeAction.fringe, activeAction.size * 0.5) }
-    : null;
   const renderedPieces = getRenderablePieces();
-  // An in-progress stroke only changes the tiles it touches. Repainting those
-  // tiles instead of every visible tile keeps the brush responsive at 4× zoom.
-  const tilesToRender = activeOnly && activeRendered
-    ? visibleTiles.filter((tile) => overlapsTile(activeRendered.bounds, tile))
-    : visibleTiles;
-  for (const tile of tilesToRender) renderTile(tile, renderedPieces, activeRendered);
+  for (const tile of visibleTiles) renderTile(tile, renderedPieces);
+  renderActivePaint();
 }
 
 function resizeCanvas() {
+  window.clearTimeout(zoomRasterTimer);
   window.cancelAnimationFrame(resizeFrame);
   resizeFrame = window.requestAnimationFrame(() => {
     const width = Math.max(dom.surface.scrollWidth, dom.surface.clientWidth);
@@ -459,6 +500,17 @@ function resizeCanvas() {
     dom.canvas.style.height = height + "px";
     render();
   });
+}
+
+function refreshZoomRaster() {
+  window.clearTimeout(zoomRasterTimer);
+  canvasRenderScale = window.devicePixelRatio * state.zoom;
+  render();
+}
+
+function scheduleZoomRasterRefresh() {
+  window.clearTimeout(zoomRasterTimer);
+  zoomRasterTimer = window.setTimeout(refreshZoomRaster, ZOOM_RASTER_SETTLE_MS);
 }
 
 function clientToSurface(clientX, clientY) {
@@ -659,24 +711,33 @@ function addSpraySample(action, point, timestamp, flow = valveFlowAt(action, tim
   });
 }
 
-function emitSprayFringe(action, point, elapsed, flow = 1) {
+function emitSprayFringe(action, point, elapsed, flow = 1, direction = null) {
   const normalizedFlow = Math.max(0.08, Math.min(1, flow));
-  const coreRadius = action.size * (0.08 + normalizedFlow * 0.31);
-  const outerRadius = action.size * (0.14 + normalizedFlow * 0.34);
   const emissionScale = Math.max(0.65, Math.min(2, elapsed / 16.67));
   const count = Math.max(1, Math.min(10, Math.round((2 + action.size / 22) * emissionScale * normalizedFlow)));
   const dotScale = 0.65 + Math.min(2, action.size * 0.018);
   const coverage = movementCoverage(action.pointerSpeed);
   const particleAlpha = Math.max(0.08, normalizedFlow * (0.22 + coverage * 0.78));
+  // Use the fully opened core radius, rather than the current flow radius:
+  // later samples may expand over earlier low-flow marks. This keeps every
+  // particle outside the eventual paint body as the valve opens.
+  const coreRadius = action.size * 0.39;
+  const tangent = direction && Math.hypot(direction.x, direction.y) > 0.01
+    ? Math.atan2(direction.y, direction.x)
+    : null;
 
   for (let index = 0; index < count; index += 1) {
-    const angle = Math.random() * Math.PI * 2;
-    const distance = coreRadius + Math.pow(Math.random(), 1.65) * (outerRadius - coreRadius);
     const isEdgeClump = Math.random() < 0.22;
+    const radius = dotScale * normalizedFlow * (isEdgeClump ? 0.9 + Math.random() * 0.8 : 0.28 + Math.random() * 0.5);
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const angle = tangent === null
+      ? Math.random() * Math.PI * 2
+      : tangent + side * (Math.PI / 2);
+    const distance = coreRadius + radius + action.size * (0.025 + Math.pow(Math.random(), 1.7) * 0.115);
     action.fringe.push({
       x: point.x + Math.cos(angle) * distance,
       y: point.y + Math.sin(angle) * distance,
-      r: dotScale * normalizedFlow * (isEdgeClump ? 0.9 + Math.random() * 0.8 : 0.28 + Math.random() * 0.5),
+      r: radius,
       alpha: particleAlpha * (0.72 + Math.random() * 0.28)
     });
   }
@@ -690,6 +751,7 @@ function sprayLoop(timestamp) {
   const from = action.lastEmissionPoint;
   const to = action.pointer;
   const distance = Math.hypot(to.x - from.x, to.y - from.y);
+  const direction = distance >= 0.5 ? { x: to.x - from.x, y: to.y - from.y } : action.lastSprayDirection;
   const spacing = Math.max(1.5, action.size * 0.08);
   const steps = Math.max(1, Math.ceil(distance / spacing));
   const flow = valveFlowAt(action, timestamp);
@@ -702,19 +764,20 @@ function sprayLoop(timestamp) {
         y: from.y + (to.y - from.y) * amount
       };
       addSpraySample(action, point, timestamp, flow);
-      emitSprayFringe(action, point, elapsed / steps, flow);
+      emitSprayFringe(action, point, elapsed / steps, flow, direction);
     }
   } else {
     addSpraySample(action, to, timestamp, flow);
     if (timestamp - action.lastStationaryFringe > 70) {
-      emitSprayFringe(action, to, Math.min(elapsed, 16.67), flow);
+      emitSprayFringe(action, to, Math.min(elapsed, 16.67), flow, direction);
       action.lastStationaryFringe = timestamp;
     }
   }
 
   action.lastEmissionPoint = { ...to };
+  if (distance >= 0.5) action.lastSprayDirection = direction;
   action.lastTimestamp = timestamp;
-  render({ activeOnly: true });
+  renderActivePaint();
   sprayFrame = window.requestAnimationFrame(sprayLoop);
 }
 
@@ -731,6 +794,7 @@ function beginSpray(event) {
     fringe: [],
     pointer: point,
     lastEmissionPoint: point,
+    lastSprayDirection: null,
     lastTimestamp: startedAt,
     lastStationaryFringe: startedAt,
     startedAt,
@@ -1063,10 +1127,10 @@ function setZoom(nextZoom, clientX = window.innerWidth / 2, clientY = window.inn
   state.zoom = next;
   state.panX = clientX - localX * next;
   state.panY = clientY - localY * next;
-  resizeCanvas();
   applyViewportTransform();
   syncZoomControl();
   showZoomFeedback();
+  scheduleZoomRasterRefresh();
 }
 
 function percentageToZoom(percentage) {
@@ -1315,6 +1379,7 @@ dom.zoomIn.addEventListener("click", () => setZoom(state.zoom + ZOOM_STEP));
 dom.zoomOut.addEventListener("click", () => setZoom(state.zoom - ZOOM_STEP));
 dom.zoomReset.addEventListener("click", () => setZoom(MIN_ZOOM));
 dom.zoomSlider.addEventListener("input", (event) => setZoom(percentageToZoom(Number(event.currentTarget.value))));
+dom.zoomSlider.addEventListener("change", refreshZoomRaster);
 dom.zoomSlider.addEventListener("pointerdown", showZoomFeedback);
 
 dom.canvas.addEventListener("pointerdown", onCanvasPointerDown);

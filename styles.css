@@ -463,8 +463,15 @@ blockquote cite {
   pointer-events: none;
 }
 
-#graffiti-canvas {
+#graffiti-active-paint {
+  position: absolute;
   z-index: 20;
+  display: none;
+  pointer-events: none;
+}
+
+#graffiti-canvas {
+  z-index: 21;
   pointer-events: none;
   touch-action: none;
 }
