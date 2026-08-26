@@ -24,6 +24,47 @@ async function paintStats(page) {
   }), { pieces: 0, samples: 0, fringe: 0, erasures: 0, legacyParticles: 0 });
 }
 
+async function activeStrokeRenderStats(page) {
+  return page.evaluate(() => window.__activeStrokeRenderStats || null);
+}
+
+async function fringeEdgeStats(page) {
+  return page.evaluate(() => {
+    const key = "web-graffiti:page:" + window.location.href;
+    const piece = JSON.parse(localStorage.getItem(key) || "[]").at(-1);
+    const anchor = document.querySelector(`[data-graffiti-anchor="${piece.anchorId}"]`);
+    const anchorRect = anchor.getBoundingClientRect();
+    const surfaceRect = document.querySelector("#site-surface").getBoundingClientRect();
+    const samples = piece.samples.map((sample) => ({
+      x: anchorRect.left - surfaceRect.left + sample.nx * anchorRect.width,
+      y: anchorRect.top - surfaceRect.top + sample.ny * anchorRect.height,
+      flow: sample.flow ?? 1
+    }));
+    const distanceToSegment = (point, from, to) => {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const length = dx * dx + dy * dy;
+      const progress = length ? Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / length)) : 0;
+      return { distance: Math.hypot(point.x - (from.x + dx * progress), point.y - (from.y + dy * progress)), progress };
+    };
+    let inside = 0;
+    for (const fringe of piece.fringe) {
+      const point = {
+        x: anchorRect.left - surfaceRect.left + fringe.nx * anchorRect.width,
+        y: anchorRect.top - surfaceRect.top + fringe.ny * anchorRect.height
+      };
+      let clearance = Infinity;
+      for (let index = 1; index < samples.length; index += 1) {
+        const hit = distanceToSegment(point, samples[index - 1], samples[index]);
+        const flow = samples[index - 1].flow + (samples[index].flow - samples[index - 1].flow) * hit.progress;
+        clearance = Math.min(clearance, hit.distance - piece.size * 0.39 * (0.22 + flow * 0.78) - fringe.r);
+      }
+      if (clearance <= 0) inside += 1;
+    }
+    return { inside, fringe: piece.fringe.length };
+  });
+}
+
 (async () => {
   browser = await chromium.launch({ executablePath: edgePath, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
@@ -173,6 +214,28 @@ async function paintStats(page) {
   assert.equal(await page.locator("#zoom-value").textContent(), "25%", "zoom slider should update the page zoom in five-percent increments");
   assert.equal(await page.locator(".zoom-controls").evaluate((node) => node.classList.contains("show-readout")), true, "zoom slider should show visual percentage feedback");
 
+  await page.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "width");
+    window.__zoomRenderStats = { tileResizes: 0 };
+    Object.defineProperty(HTMLCanvasElement.prototype, "width", {
+      configurable: true,
+      get: descriptor.get,
+      set(value) {
+        if (this.classList.contains("graffiti-tile")) window.__zoomRenderStats.tileResizes += 1;
+        return descriptor.set.call(this, value);
+      }
+    });
+  });
+  await page.locator("#zoom-slider").evaluate((slider) => {
+    slider.value = "95";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(() => window.__zoomRenderStats.tileResizes), 0, "moving the zoom slider should not reallocate static graffiti tiles");
+  await page.locator("#zoom-slider").evaluate((slider) => slider.dispatchEvent(new Event("change", { bubbles: true })));
+  await page.waitForTimeout(80);
+  assert.ok(await page.evaluate(() => window.__zoomRenderStats.tileResizes) > 0, "releasing the zoom slider should refresh static graffiti detail");
+
   const transformBeforeHorizontalScroll = await page.locator("#site-surface").evaluate((surface) => surface.style.transform);
   await page.mouse.move(720, 400);
   await page.mouse.wheel(180, 0);
@@ -184,12 +247,25 @@ async function paintStats(page) {
   assert.equal(await page.locator("#zoom-value").textContent(), "100%", "the top of the remapped control should retain 4× detail magnification");
 
   await page.locator("#spray-tool").click();
+  await page.evaluate(() => {
+    const originalClearRect = CanvasRenderingContext2D.prototype.clearRect;
+    window.__activeStrokeRenderStats = { staticTileClears: 0 };
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      if (this.canvas.classList.contains("graffiti-tile")) window.__activeStrokeRenderStats.staticTileClears += 1;
+      return originalClearRect.apply(this, args);
+    };
+  });
   await page.mouse.move(680, 330);
   await page.mouse.down();
   await page.mouse.move(760, 350, { steps: 16 });
+  await page.waitForTimeout(80);
+  assert.equal((await activeStrokeRenderStats(page)).staticTileClears, 0, "an active stroke should not repaint cached graffiti tiles at maximum zoom");
   await page.mouse.up();
   await page.waitForTimeout(80);
   assert.equal((await storedPieces(page)).length, 4, "drawing coordinates should stay aligned at maximum canvas zoom");
+  const edgeStats = await fringeEdgeStats(page);
+  assert.equal(edgeStats.inside, 0, "spray particles should stay outside the paint body");
+  assert.ok(edgeStats.fringe > 0, "spray should retain edge particles");
 
   await page.locator("#zoom-reset").click();
   await page.waitForTimeout(80);
