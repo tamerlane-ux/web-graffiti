@@ -58,11 +58,11 @@ input:focus-visible,
   transform-origin: 0 0;
 }
 
-body.graffiti-mode {
+body.graffiti-viewport {
   overflow: hidden;
 }
 
-body.graffiti-mode #surface-shell {
+body.graffiti-viewport #surface-shell {
   position: fixed;
   z-index: 1;
   inset: 0;
@@ -72,7 +72,7 @@ body.graffiti-mode #surface-shell {
   overscroll-behavior: none;
 }
 
-body.graffiti-mode #site-surface {
+body.graffiti-viewport #site-surface {
   position: absolute;
   top: 0;
   left: 0;
@@ -580,7 +580,14 @@ body.graffiti-mode.is-panning #graffiti-canvas {
   position: fixed;
   z-index: 110;
   inset: 0;
+  contain: layout paint;
   pointer-events: none;
+}
+
+.graffiti-controls[hidden] {
+  display: block !important;
+  visibility: hidden;
+  opacity: 0;
 }
 
 .history-controls,
@@ -1103,16 +1110,21 @@ body.graffiti-mode.is-panning #graffiti-canvas {
 
 .brush-cursor {
   --cursor-density: 0.06;
+  --cursor-angle: 0rad;
+  --cursor-stretch: 1;
+  --cursor-squash: 1;
   position: fixed;
   z-index: 90;
   display: none;
   width: 36px;
   height: 36px;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) rotate(var(--cursor-angle)) scale(var(--cursor-stretch), var(--cursor-squash));
+  transform-origin: center;
   border: 2px solid #111;
   border-radius: 50%;
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  will-change: width, height, transform, border-radius;
   transition: width 180ms ease-out, height 180ms ease-out, border-color 120ms linear, box-shadow 180ms ease-out;
 }
 
@@ -1210,6 +1222,12 @@ body.graffiti-mode.is-panning #graffiti-canvas {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .brush-cursor {
+    transform: translate(-50%, -50%);
+    border-radius: 50% !important;
+    transition: none;
   }
 
   .toast {
